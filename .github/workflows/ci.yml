@@ -34,9 +34,11 @@ jobs:
         run: npm test --prefix web-ts
       - name: the web app starts and answers
         run: |
-          uv run resumes web --port 8765 > web.log 2>&1 &
+          .venv/bin/resumes web --port 8765 > web.log 2>&1 &
+          server=$!
           for i in $(seq 1 90); do curl -sf http://localhost:8765/api/me && break; sleep 1; done
           curl -sf http://localhost:8765/api/config > /dev/null || { cat web.log; exit 1; }
+          kill $server
 
   secrets:
     runs-on: ubuntu-latest
