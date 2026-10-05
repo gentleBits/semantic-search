@@ -2,6 +2,7 @@ name: tests
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -19,6 +20,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: the release's files, while the repository is private (its downloads need a login until then)
+        if: github.event.repository.private
+        run: gh release download seed-1 --dir .release --repo "${{ github.repository }}"
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: setup (no key)
         run: scripts/setup.sh
       - name: the Python suite, with the app server's tests
