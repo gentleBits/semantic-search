@@ -1,0 +1,42 @@
+[project]
+name = "agentic-search"
+version = "0.1.0"
+description = "resumes: conversational resume search for coding agents (CLI + MCP)"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    # query path (kept small: CLI start-up time)
+    "duckdb>=1.1",
+    "pyroaring>=1.0",
+    # build path
+    "beautifulsoup4>=4.12",
+    "ftfy>=6.2",
+    "datasketch>=1.6",
+    "pyyaml>=6.0",
+    "openai>=1.50",
+    "tiktoken>=0.8",
+    "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "mcp>=1.2", "starlette>=0.40", "uvicorn>=0.30"]
+local = ["sentence-transformers>=3.0"]
+mcp = ["mcp>=1.2"]          # `resumes mcp` only; never imported by the CLI verbs
+web = ["starlette>=0.40", "uvicorn>=0.30"]      # `resumes web` only; both come with the `mcp` extra too
+
+[project.scripts]
+resumes = "agentic_search.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentic_search"]
+exclude = ["**/node_modules"]      # the app server (web-ts/) lives beside the package and is run from the project
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Some tests copy the corpus and the index (over 1 GB) into their temp directory; pytest would keep the last three
+# runs' temp directories. Keep failed ones only.
+tmp_path_retention_policy = "failed"
+tmp_path_retention_count = 1

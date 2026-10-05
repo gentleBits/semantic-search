@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "resumes": {
+      "type": "stdio",
+      "command": "resumes",
+      "args": ["mcp"],
+      "env": {}
+    }
+  }
+}

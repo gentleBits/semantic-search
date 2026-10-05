@@ -1,0 +1,86 @@
+# resumes — configuration
+
+[corpus]
+out = "corpus"          # corpus/md/<id>.md + corpus/registry.json
+currency = "EUR"        # all rates are stored in this currency, as per hour
+
+# Sources are read in this order. doc_no is assigned on first sight of a
+# (source, source_id) pair and never changes afterwards.
+# The two public Kaggle datasets: scripts/get-data.sh downloads them. Your own resumes: markdown files in data/inbox.
+[[sources]]
+id = "livecareer"
+loader = "csv_livecareer"
+path = "data/resume_dataset_livecareer.csv"
+
+[[sources]]
+id = "kaggle"
+loader = "csv_kaggle"
+path = "data/UpdatedResumeDataSet.csv"
+
+[[sources]]
+id = "inbox"
+loader = "markdown_dir"
+path = "data/inbox"
+optional = true
+
+[fixture]                                       # `resumes fixture`: the synthetic test corpus in data/fixture
+model = "gpt-5-mini"
+seed = 42
+count = 400
+
+[index]
+out = "index"                                   # index/current → index/resumes-<version>.duckdb
+cache = "index/cache"                           # embeddings + LLM extractions keyed by content hash (rebuilds are cheap)
+vocab = "schema/vocab.csv"
+embedder = "openai:text-embedding-3-large"      # or "local:BAAI/bge-m3"
+dim = 1024
+extractor = "openai:gpt-5-mini"                 # or "none" (deterministic fields only)
+extract_concurrency = 16
+tau = 0.50                                      # weak (semantic) membership: cosine(term description, chunk) ≥ tau
+chunk_max_tokens = 350
+chunk_overlap = 40
+card_max_tokens = 110
+
+[query]
+sessions = ".resumes/sessions"      # one session per agent conversation: CURRENT_SESSION file or $RESUMES_SESSION
+max_cards = 50                      # ranking limit: `cards` / `judge` refuse above this many people and ask to narrow
+page_size = 10
+gc_days = 14                        # `resumes session gc` deletes sessions untouched for this long
+tau_text = 0.35                     # --text weak membership: cosine(query, chunk) ≥ tau_text. Lower than [index].tau because a short
+                                    # query sits further from a chunk than a term description
+like_min_cover = 0.4                # --like: a resume must cover this share of the job description's resolved terms
+allow_contact = false               # `show --full --contact` reads the unredacted source row
+# link_template = "https://ats.example/candidates/{id}"   # default: file:// link to corpus/md/<id>.md
+
+[web]                                 # `resumes web`: the chat + results UI
+host = "127.0.0.1"                    # local; the login is on as soon as `resumes users add NAME` made an account (.resumes/users.json)
+port = 8765                           # the app server (web-ts/, Node 22): the page and the API the browser talks to
+# public_host = "search.example.com"  # behind a proxy: the public name the app server also answers as (Host and Origin)
+engine_port = 8770                    # the Python engine's API on 127.0.0.1; `resumes web` starts both
+model = "openai:gpt-5-mini"           # the assistant, as provider:model — openai:… or openrouter:vendor/model; the app server runs it
+                                      # on pi (pi-agent-core + pi-ai). What Settings chooses (.resumes/settings.json) wins over this line.
+effort = "medium"                     # thinking level: off, minimal, low, medium (default), high
+# judge_model = "openai:gpt-5-mini"   # the ranking job; default: the assistant's model
+judge_batch = 5                       # cards per call: small batches make the progress visible
+judge_parallel = 5                    # calls at the same time
+name = "Resumes"                      # the collection, as the header names it; noun/nouns/document: the words the UI uses for it
+noun = "person"
+nouns = "people"
+document = "resume"
+attach = "a job description"          # what a file added to the chat usually is here: only the tooltip of "+ Add file" says it ("" = none)
+starters = ["Candidates with data pipeline experience", "Java developers with 5+ years of experience", "Machine learning candidates, sorted by hourly rate"]
+
+# [signup]                            # sign-up by email code (Resend) + SMS code (Sakari) + a password → a member;
+# enabled = false                     # on with `enabled = true` or `resumes web --signup`. The keys come
+                                      # from the environment only: RESEND_API_KEY RESEND_FROM SAKARI_ACCOUNT_ID SAKARI_CLIENT_ID SAKARI_CLIENT_SECRET
+                                      # (RESUMES_SIGNUP_DRYRUN=1 sends nothing and prints the codes). The defaults are in web-ts/src/policy.ts:
+# sms_per_day = 50                    # the whole server's SMS a day: sign-up pauses when they are spent (the bill is capped)
+# emails_per_day = 200
+# work_email = true                   # refuse personal mailboxes (gmail.com, outlook.com … web-ts/data/free-domains.txt); throwaway ones are always refused
+# sms_countries = ["RO", "DE"]        # ISO codes; default: EU/EEA, GB (with GG, JE, IM), CH, US, CA — by the number's country, not its +code
+
+# [limits]                            # members (made by sign-up); admins (`resumes users add`) have none
+# turns_per_day = 100                 # assistant turns a day (24 h, rolling)
+# usd_per_day = 1.0                   # model cost a day (the turn's cost, its ranking included)
+# sessions_per_day = 10               # new sessions a day (deleting one gives none back)
+# max_usd_per_m_out = 40              # the dearest model a member may pick, $ per million output tokens (no "pro" models)

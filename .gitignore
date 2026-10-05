@@ -1,0 +1,50 @@
+# built artefacts (personal data — never committed). Anchored to the project root: a bare `index/` also
+# ignored the source package src/agentic_search/index/.
+/index/
+/index-det/
+/corpus/
+/.resumes/
+
+# data: the raw CSVs and the generated fixture are committed; the inbox is not
+/data/inbox/
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+*.egg-info/
+
+# the app server's packages and build: `resumes web` runs npm install and tsc once; dist/ is matched above
+node_modules/
+
+# os / editors
+.DS_Store
+
+# live-run transcripts hold resume text
+docs/transcripts/**/turn-*.jsonl
+docs/transcripts/**/pi-session/
+
+# exported agent sessions (they contain card text, like the raw transcripts)
+pi-session-*.html
+
+# no longer part of the project; kept on this disk only
+/docs/design/
+/docs/transcripts/
+/docs/excalidraw/
+
+# the tests' own index (tests/testroot.py)
+/.test/
+
+# seed packs made for a GitHub release (resumes index seed export)
+/.release/
+
+# keys stay out of git; .env.example is the template
+.env
+.env.*
+!.env.example
+.setup.log
+
+# the public datasets: scripts/get-data.sh downloads them
+/data/*.csv

@@ -1,0 +1,41 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      RESUMES_TIME_FACTOR: "5"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: setup (no key)
+        run: scripts/setup.sh
+      - name: the Python suite, with the app server's tests
+        run: uv run pytest -q
+      - name: the app server's whole suite
+        run: npm test --prefix web-ts
+      - name: the web app starts and answers
+        run: |
+          uv run resumes web --port 8765 > web.log 2>&1 &
+          for i in $(seq 1 90); do curl -sf http://localhost:8765/api/me && break; sleep 1; done
+          curl -sf http://localhost:8765/api/config > /dev/null || { cat web.log; exit 1; }
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks over the whole history
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --no-banner --config /repo/.gitleaks.toml --redact

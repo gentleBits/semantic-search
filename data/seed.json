@@ -1,0 +1,16 @@
+{
+ "packs": [
+  {
+   "name": "app",
+   "url": "https://github.com/gentleBits/semantic-search/releases/download/seed-1/resumes-seed-1.tar.gz",
+   "sha256": "4cf65effc7775cf964162e5eb9aa44b787e549305a2f3654a6c47eab6f494e62",
+   "holds": "the model's outputs for the two public datasets: 2,647 extractions, 38,212 vectors"
+  },
+  {
+   "name": "tests",
+   "url": "https://github.com/gentleBits/semantic-search/releases/download/seed-1/resumes-test-seed-1.tar.gz",
+   "sha256": "ea8e0c096f309d92577d7d5de2dc63edf67bdf37bdaf729294db4db29ceecb6b",
+   "holds": "the same for the synthetic test resumes in data/fixture: 400 extractions, 2,643 vectors"
+  }
+ ]
+}

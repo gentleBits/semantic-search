@@ -1,0 +1,20 @@
+# gitleaks (the CI's secret scan): its default rules, and the one fake key the tests use
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "the tests' fake OpenRouter key"
+regexTarget = "secret"
+regexes = ['''^sk-or-v1-abcdef0123456789$''']
+
+[[rules]]
+id = "openrouter-api-key"
+description = "an OpenRouter key"
+regex = '''sk-or-v1-[a-f0-9]{64}'''
+keywords = ["sk-or-v1-"]
+
+[[rules]]
+id = "openai-api-key-anywhere"
+description = "an OpenAI key, whatever it is assigned to"
+regex = '''sk-[A-Za-z0-9_-]{20,}T3BlbkFJ[A-Za-z0-9_-]{20,}'''
+keywords = ["T3BlbkFJ"]
