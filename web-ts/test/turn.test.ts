@@ -304,6 +304,21 @@ run("a stop while the model is silent does not wait for it", async (api) => {
 	assert.equal(done.message.text, "(stopped)");
 });
 
+run("a stop before the model is called means it is never called", async (api) => {
+	api.script = [{ text: "never said" }];
+	const config = api.hub.engine.config.bind(api.hub.engine);
+	api.hub.engine.config = async () => {
+		await new Promise((r) => setTimeout(r, 400)); // a slow start: the turn is running, the model not called yet
+		return config();
+	};
+	const saying = api.say("slow start");
+	await new Promise((r) => setTimeout(r, 100));
+	await api.stop();
+	const done = (await saying).at(-1)!;
+	assert.equal(done.message.text, "(stopped)");
+	assert.equal(api.calls.length, 0, "the model was not called");
+});
+
 run("the chat is off without a key, the panel still works, and the model comes from the settings", async (api) => {
 	const keys = { OPENAI_API_KEY: process.env.OPENAI_API_KEY, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY };
 	delete process.env.OPENAI_API_KEY;

@@ -276,6 +276,12 @@ export async function runTurn(deps: TurnDeps, sid: string, input: TurnInput, emi
 			turn.piece = "";
 			turn.last = null;
 			turn.exhausted = false;
+			if (signal.aborted) {
+				// a stop that came while the turn was getting ready: the model is not called at all
+				final = turn.piece;
+				stopped = true;
+				break;
+			}
 			try {
 				await agent.prompt(prompt);
 			} catch (e) {
