@@ -23,7 +23,8 @@ pytestmark = pytest.mark.skipif(not (NODE and INSTALLED), reason="node or the ap
 def test_the_app_servers_own_tests_pass():
     r = subprocess.run([NODE, "--import", "tsx", "--test", "--test-reporter=tap", "test/unit.test.ts", "test/turn.test.ts", "test/settings.test.ts", "test/login.test.ts"], cwd=APP, capture_output=True,
                        text=True, timeout=600)
-    assert r.returncode == 0, r.stdout[-3000:] + r.stderr[-3000:]
+    failed = r.stdout[r.stdout.find("not ok"):][:4000] if "not ok" in r.stdout else r.stdout[-3000:]
+    assert r.returncode == 0, failed + r.stderr[-2000:]
     assert "# fail 0" in r.stdout
     if current_path(CFG.index.out) is not None:
         assert "# skipped 0" in r.stdout, "the index is built: nothing should be skipped"

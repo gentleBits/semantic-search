@@ -30,6 +30,7 @@ jobs:
       - name: the Python suite, with the app server's tests
         run: uv run pytest -q
       - name: the app server's whole suite
+        if: success() || failure()
         run: npm test --prefix web-ts
       - name: the web app starts and answers
         run: |
