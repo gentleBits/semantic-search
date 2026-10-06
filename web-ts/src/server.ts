@@ -110,12 +110,12 @@ export function createApp(hub: Hub, hosts: Set<string> = LOCAL_HOSTS, publicDir:
 	const app: App = new Hono();
 	app.use("*", ownPageOnly(hosts));
 
-	// while login is on, every /api route but login, logout, me and the sign-up needs the cookie
+	// while login is on, every /api route but login, logout, me and the email and phone check needs the cookie
 	app.use("/api/*", async (c, next) => {
 		c.set("user", null);
 		if (hub.auth.on() && !["/api/login", "/api/logout", "/api/me"].includes(c.req.path) && !(c.req.path === "/api/signup" || c.req.path.startsWith("/api/signup/"))) {
 			const user = hub.auth.who(c);
-			if (!user) return c.json({ error: { role: "error", code: "LOGIN_REQUIRED", text: "Log in to search." } }, 401);
+			if (!user) return c.json({ error: { role: "error", code: "LOGIN_REQUIRED", text: hub.signup ? "Please confirm your email and phone to search." : "Log in to search." } }, 401);
 			c.set("user", user);
 		}
 		await next();
@@ -292,15 +292,22 @@ export function createApp(hub: Hub, hosts: Set<string> = LOCAL_HOSTS, publicDir:
 		return c.json({ user: null });
 	});
 
-	// the sign-up: the flow is kept on the server; the cookie holds only its id
+	// the check (an email code every time, a text the first time a number is seen): the flow is kept on the server and
+	// the cookie holds only its id; when it is passed, the flow's cookie goes and the cookie of who may search is set
 	const flowId = (c: Context) => getCookie(c, SIGNUP_COOKIE) || null;
 	const keepFlow = (c: Context, id: string) =>
 		setCookie(c, SIGNUP_COOKIE, id, { path: "/", httpOnly: true, sameSite: "Lax", secure: isHttps(c), maxAge: hub.policy.signup.flow_ttl });
 	const signupRoute = (fn: (c: Context, data: Record<string, unknown>) => Promise<unknown> | unknown) => async (c: Context) => {
-		if (!hub.signup) return c.json({ error: { role: "error", code: "SIGNUP_OFF", text: "There is no sign-up on this server: ask the person who runs it for an account." } }, 404);
+		if (!hub.signup) return c.json({ error: { role: "error", code: "SIGNUP_OFF", text: "This server has no email and phone check: ask the person who runs it." } }, 404);
 		try {
 			const data = c.req.method === "GET" || c.req.method === "DELETE" ? {} : await bodyOf(c);
-			return c.json((await fn(c, data)) as any);
+			const out = (await fn(c, data)) as any;
+			if (out && out.done === true && typeof out.user === "string") {
+				deleteCookie(c, SIGNUP_COOKIE, { path: "/" });
+				hub.auth.setLogin(c, out.user);
+				return c.json({ done: true, user: out.user, role: hub.role(out.user) });
+			}
+			return c.json(out);
 		} catch (e) {
 			const p = problem(e);
 			if (e instanceof SignupError && e.code === "SIGNUP_EXPIRED") deleteCookie(c, SIGNUP_COOKIE, { path: "/" });
@@ -317,33 +324,24 @@ export function createApp(hub: Hub, hosts: Set<string> = LOCAL_HOSTS, publicDir:
 		}),
 	);
 	app.post(
-		"/api/signup/email",
+		"/api/signup/start",
 		signupRoute(async (c, d) => {
-			const { id, view } = await hub.signup!.start(flowId(c), d.email, ipOf(c), siteOf(c));
+			const { id, view } = await hub.signup!.start(flowId(c), { email: d.email, phone: d.phone }, ipOf(c));
 			keepFlow(c, id);
 			return view;
 		}),
 	);
-	app.post("/api/signup/email/verify", signupRoute((c, d) => hub.signup!.verifyEmail(flowId(c), d.code)));
+	app.post("/api/signup/email/verify", signupRoute((c, d) => hub.signup!.verifyEmail(flowId(c), d.code, ipOf(c), siteOf(c))));
 	app.post("/api/signup/phone", signupRoute((c, d) => hub.signup!.phone(flowId(c), d.phone, ipOf(c), siteOf(c))));
 	app.delete("/api/signup/phone", signupRoute((c) => hub.signup!.changePhone(flowId(c))));
-	app.post("/api/signup/phone/verify", signupRoute((c, d) => hub.signup!.verifyPhone(flowId(c), d.code)));
+	app.post("/api/signup/phone/verify", signupRoute((c, d) => hub.signup!.verifyPhone(flowId(c), d.code, ipOf(c))));
 	app.post("/api/signup/resend", signupRoute((c) => hub.signup!.resend(flowId(c), ipOf(c), siteOf(c))));
-	app.post(
-		"/api/signup/password",
-		signupRoute((c, d) => {
-			const name = hub.signup!.finish(flowId(c), d.password, ipOf(c));
-			deleteCookie(c, SIGNUP_COOKIE, { path: "/" });
-			hub.auth.setLogin(c, name);
-			return { user: name, role: hub.role(name) };
-		}),
-	);
 	app.delete(
 		"/api/signup",
 		signupRoute((c) => {
 			hub.signup!.cancel(flowId(c));
 			deleteCookie(c, SIGNUP_COOKIE, { path: "/" });
-			return { step: "email" };
+			return hub.signup!.view(null);
 		}),
 	);
 
@@ -351,7 +349,8 @@ export function createApp(hub: Hub, hosts: Set<string> = LOCAL_HOSTS, publicDir:
 	app.get("/*", async (c) => {
 		const path = normalize(decodeURIComponent(c.req.path)).replace(/^\/+/, "");
 		if (path.includes("..")) return c.text("no", 404);
-		const file = join(publicDir, path === "" || path.endsWith("/") ? `${path}index.html` : path);
+		const search = /^c\/[^/]+\/?$/.test(path); // a search's address (/c/<id>) is the page itself: the page reads the id from it
+		const file = join(publicDir, search ? "index.html" : path === "" || path.endsWith("/") ? `${path}index.html` : path);
 		try {
 			const s = await stat(file);
 			if (!s.isFile()) return c.text("not found", 404);
@@ -416,8 +415,8 @@ export async function main(): Promise<void> {
 		}
 		const n = hub.auth.users.count();
 		line += n ? ` · login on (${n} user${n === 1 ? "" : "s"}${n <= 5 ? `: ${hub.auth.users.names().join(", ")}` : ""})` : hub.signup ? " · login on (no account yet)" : " · login off (no account yet: resumes users add NAME)";
-		if (hub.signup) line += ` · signup on (${hub.signup.senders.name}; ${hub.policy.signup.sms_per_day} SMS and ${hub.policy.signup.emails_per_day} emails a day; members: ${hub.policy.limits.turns_per_day} turns and $${hub.policy.limits.usd_per_day} a day)`;
-		else if (hub.signupOff) line += ` · signup off (${hub.signupOff})`;
+		if (hub.signup) line += ` · email and phone check on (${hub.signup.senders.name}; ${hub.policy.signup.sms_per_day} SMS and ${hub.policy.signup.emails_per_day} emails a day; members: ${hub.policy.limits.turns_per_day} turns and $${hub.policy.limits.usd_per_day} a day)`;
+		else if (hub.signupOff) line += ` · email and phone check off (${hub.signupOff})`;
 		for (const f of hub.features) line += ` · ${f.startLine?.() ?? f.name}`;
 		console.log(line);
 		if (a.open) setTimeout(() => exec(`${process.platform === "darwin" ? "open" : "xdg-open"} ${url}`), 600);

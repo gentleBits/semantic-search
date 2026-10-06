@@ -19,6 +19,7 @@ export function ChatHead({ s }) {
       <button class="brand" onClick=${(e) => { e.stopPropagation(); toggle('collection'); }} aria-expanded=${s.pop === 'collection'} aria-haspopup="dialog">
         <span class="mark"><${I.Search} size=${12} color="var(--on-accent)" /></span>
         <span class="name">${c.name}</span>
+        ${c.demo && html`<span class="tag" title="A demo over public resumes, not a product">demo</span>`}
         <span class="n">${num(c.count)}</span>
       </button>
       <span class="crumb-sep" aria-hidden="true">/</span>

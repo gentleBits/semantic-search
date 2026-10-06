@@ -403,7 +403,7 @@ def cmd_users(args):
         if not users.block(path, args.name):
             print(f"UNKNOWN_USER {args.name}", file=sys.stderr)
             return 1
-        print(f"blocked {users.normalize_name(args.name)} · logged out at once; the email and the phone stay taken (`users add NAME --member` lets it back in)", file=sys.stderr)
+        print(f"blocked {users.normalize_name(args.name)} · out at once; neither the email nor its numbers pass the check again (`users add NAME --member` lets it back in)", file=sys.stderr)
         return 0
     name = users.normalize_name(args.name)
     password = args.password
@@ -566,7 +566,7 @@ def _query_parsers(sub) -> None:
     wb.add_argument("--port", type=int, default=None, metavar="PORT", help="default: [web].port (8765)")
     wb.add_argument("--open", action="store_true", help="open the browser")
     wb.add_argument("--public-host", default=None, metavar="NAME[,NAME]", help="behind a proxy (Caddy): the public name(s) accepted in Host and Origin; default: [web].public_host")
-    wb.add_argument("--signup", action="store_true", default=None, help="sign-up by email code + SMS code; needs RESEND_* and SAKARI_* in the environment; default: [signup].enabled")
+    wb.add_argument("--signup", action="store_true", default=None, help="the email and phone check before anyone may search (an email code every time, an SMS code for a number not seen before); needs RESEND_* and SAKARI_* in the environment; default: [signup].enabled")
     wb.set_defaults(func=cmd_web)
     us = sub.add_parser("users", help="the accounts of `resumes web`: login is on as soon as there is one")
     usub = us.add_subparsers(dest="sub", required=True)
@@ -577,11 +577,11 @@ def _query_parsers(sub) -> None:
     uar.add_argument("--member", action="store_true", help="a member: the limits of [limits] apply (default for a new account: admin; a known one keeps its role)")
     uar.add_argument("--admin", action="store_true", help="an admin: no limits, any model")
     ua.set_defaults(func=cmd_users)
-    usub.add_parser("list", help="the accounts, one per line: name, created, role, phone, how it was made").set_defaults(func=cmd_users)
-    ur = usub.add_parser("remove", help="delete an account; the person is logged out at once, the email and phone are free again")
+    usub.add_parser("list", help="the accounts, one per line: name, created, role, phone (the last one), how it was made (operator, signup, check)").set_defaults(func=cmd_users)
+    ur = usub.add_parser("remove", help="delete an account; the person is out at once (with the check on: in again by passing it)")
     ur.add_argument("name")
     ur.set_defaults(func=cmd_users)
-    ub = usub.add_parser("block", help="block an account: logged out at once, and its email and phone stay taken (no new sign-up with them)")
+    ub = usub.add_parser("block", help="block an account: out at once, and neither its email nor its numbers pass the check again")
     ub.add_argument("name")
     ub.set_defaults(func=cmd_users)
     usub.add_parser("usage", help="each person's assistant turns and model cost, the last 24 h and 30 days (.resumes/usage.jsonl)").set_defaults(func=cmd_users)

@@ -1,10 +1,11 @@
-// The login: shown when the server requires one and nobody is logged in. A server with sign-up on also offers
-// "Create one" (signup.js). It is the project's front door, so it names the project, not a collection.
+// The login: shown when the server has accounts made by its operator (`resumes users add`) and no email and phone
+// check (a server with the check shows signup.js instead). It is the project's front door, so it names the project,
+// not a collection.
 import { html, useEffect, useRef, useState } from './lib.js';
 import * as I from './icons.js';
-import { login, openSignup } from './store.js';
+import { login } from './store.js';
 
-export function Login({ s }) {
+export function Login() {
   const first = useRef(null);
   const [name, setName] = useState('');
   const [pw, setPw] = useState('');
@@ -35,9 +36,7 @@ export function Login({ s }) {
       </div>
       ${err && html`<span class="form-error" role="alert">${err}</span>`}
       <button class="choice main" type="submit" disabled=${busy || !name.trim() || !pw}><span>${busy ? 'Logging in…' : 'Log in'}</span><span class="n">↵</span></button>
-      ${s && s.me && s.me.signup
-        ? html`<span class="hint">No account? <button type="button" class="link" onClick=${openSignup}>Create one</button></span>`
-        : html`<span class="hint">No account? Ask the person who runs this server.</span>`}
+      <span class="hint">No account? Ask the person who runs this server.</span>
     </form>
   </div>`;
 }

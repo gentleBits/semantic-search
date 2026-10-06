@@ -69,17 +69,18 @@ nouns = "people"
 document = "resume"
 attach = "a job description"          # what a file added to the chat usually is here: only the tooltip of "+ Add file" says it ("" = none)
 starters = ["Candidates with data pipeline experience", "Java developers with 5+ years of experience", "Machine learning candidates, sorted by hourly rate"]
+demo = true                           # a "demo" label next to the name in the header and in the tab's title
 
-# [signup]                            # sign-up by email code (Resend) + SMS code (Sakari) + a password → a member;
-# enabled = false                     # on with `enabled = true` or `resumes web --signup`. The keys come
+# [signup]                            # the email and phone check before anyone may search: an email code (Resend) every time, an
+# enabled = false                     # SMS code (Sakari) the first time a number is seen; no password. On with `enabled = true` or `resumes web --signup`. The keys come
                                       # from the environment only: RESEND_API_KEY RESEND_FROM SAKARI_ACCOUNT_ID SAKARI_CLIENT_ID SAKARI_CLIENT_SECRET
                                       # (RESUMES_SIGNUP_DRYRUN=1 sends nothing and prints the codes). The defaults are in web-ts/src/policy.ts:
-# sms_per_day = 50                    # the whole server's SMS a day: sign-up pauses when they are spent (the bill is capped)
+# sms_per_day = 50                    # the whole server's SMS a day: new numbers wait for the next day when they are spent (the bill is capped)
 # emails_per_day = 200
 # work_email = true                   # refuse personal mailboxes (gmail.com, outlook.com … web-ts/data/free-domains.txt); throwaway ones are always refused
 # sms_countries = ["RO", "DE"]        # ISO codes; default: EU/EEA, GB (with GG, JE, IM), CH, US, CA — by the number's country, not its +code
 
-# [limits]                            # members (made by sign-up); admins (`resumes users add`) have none
+# [limits]                            # members (made by the check), per phone number; admins (`resumes users add`) have none
 # turns_per_day = 100                 # assistant turns a day (24 h, rolling)
 # usd_per_day = 1.0                   # model cost a day (the turn's cost, its ranking included)
 # sessions_per_day = 10               # new sessions a day (deleting one gives none back)

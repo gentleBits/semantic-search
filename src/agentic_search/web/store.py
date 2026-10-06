@@ -13,8 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-import secrets
-from datetime import datetime
+import uuid
 from pathlib import Path
 
 from ..errors import ResumesError
@@ -23,11 +22,11 @@ from ..session.store import now_iso, validate_session_id, write_atomic
 WEB_FILE = "web.json"
 CHAT_FILE = "chat.jsonl"
 TITLE_MAX = 48
-PREFIX = "web-"
 
 
 def new_id() -> str:
-    return PREFIX + datetime.now().strftime("%Y-%m-%d-%H%M") + "-" + secrets.token_hex(2)
+    """A random UUID, as chat apps use: the page's address is /c/<id>. Older ones are web-<date>-<time>-<hex>."""
+    return str(uuid.uuid4())
 
 
 class WebSession:

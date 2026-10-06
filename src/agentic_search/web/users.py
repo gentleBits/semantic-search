@@ -1,12 +1,14 @@
-"""The accounts of `resumes web`: `.resumes/users.json`, written by the operator's commands and by the app server's sign-up.
+"""The people of `resumes web`: `.resumes/users.json`, written by the operator's commands and by the app server's email
+and phone check.
 
-    {"users": {"ana@example.com": {"hash": "scrypt$14$8$1$<salt>$<hash>", "created": "…", "role": "member",
-                                   "phone": "…", "verified": {"email": "…", "phone": "…"}, "via": "signup"}}}
+    {"users": {"dana@example.com": {"hash": "scrypt$14$8$1$<salt>$<hash>", "created": "…", "role": "admin"},
+               "ana@example.com":  {"created": "…", "role": "member", "phone": "+40…", "phones": ["+40…"],
+                                    "verified": {"email": "…", "phone": "…"}, "seen": "…", "via": "check"}}}
 
 The hash is scrypt (N=2^14, r=8, p=1, 16-byte salt, 32 bytes out, base64url without padding) and must stay
-byte-compatible with `crypto.scryptSync` in the app server. A record without a role is an admin. Every field of a
-record is kept on rewrite, since the app server writes fields this module does not know. Both programs take
-`users.lock` around a read-modify-write.
+byte-compatible with `crypto.scryptSync` in the app server. Only the operator's accounts have one; the check's members
+have none. A record without a role is an admin. Every record and every field is kept on rewrite, since the app server
+writes ones this module does not know. Both programs take `users.lock` around a read-modify-write.
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ def role_of(rec: dict) -> str:
 
 
 def load(path: Path) -> dict[str, dict]:
-    """name → the whole record; records without a hash are skipped."""
+    """name → the whole record, password or not (a rewrite must not drop the check's members)."""
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -82,7 +84,7 @@ def load(path: Path) -> dict[str, dict]:
     out: dict[str, dict] = {}
     if isinstance(users, dict):
         for name, rec in users.items():
-            if isinstance(rec, dict) and isinstance(rec.get("hash"), str) and rec["hash"].startswith("scrypt$"):
+            if isinstance(rec, dict):
                 out[str(name).strip().lower()] = dict(rec)
     return out
 
@@ -167,7 +169,7 @@ def remove(path: Path, name: str) -> bool:
 
 
 def block(path: Path, name: str) -> bool:
-    """Kept as `blocked` rather than deleted, so its email and phone cannot sign up again."""
+    """Kept as `blocked` rather than deleted, so neither its email nor any of its numbers passes the check again."""
     key = normalize_name(name)
     with locked(path):
         users = load(path)

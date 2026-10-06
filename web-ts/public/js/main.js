@@ -8,7 +8,7 @@ import { Detail } from './detail.js';
 import { act, boot, chatWidth, close, closeDetail, newSession, saveChatWidth, set, toggle, useStore } from './store.js';
 import { SettingsPop } from './settings.js';
 import { Login } from './login.js';
-import { Signup } from './signup.js';
+import { Check } from './signup.js';
 
 function useMedia(query) {
   const [hit, setHit] = useState(() => window.matchMedia(query).matches);
@@ -62,6 +62,7 @@ function PhoneTop({ s }) {
       <button class="brand" onClick=${(e) => { e.stopPropagation(); toggle('sessions'); }} aria-expanded=${s.pop === 'sessions'}>
         <span class="mark"><${I.Search} size=${12} color="var(--on-accent)" /></span>
         <span class="name">${title}</span>
+        ${c.demo && html`<span class="tag" title="A demo over public resumes, not a product">demo</span>`}
         <${I.Down} size=${12} color="var(--ink-3)" />
       </button>
       <div class="tools">
@@ -104,7 +105,7 @@ function App() {
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
   }, []);
   if (s.fatal) return html`<${Fatal} error=${s.fatal} />`;
-  if (s.locked) return s.signupOpen ? html`<${Signup} />` : html`<${Login} s=${s} />`;
+  if (s.locked) return s.me && s.me.signup ? html`<${Check} />` : html`<${Login} />`;
   if (!s.ready || !s.snap) return html`<div class="app" aria-busy="true"></div>`;
   const detail = !!s.detail;
   const third = detail && wide && !phone;                 // the resume as a third column

@@ -1,4 +1,4 @@
-/** The numbers of sign-up and of use: the defaults here, with resumes.toml's [signup] and [limits] over them (`--policy`). */
+/** The numbers of the email and phone check ([signup]) and of use: the defaults here, with resumes.toml's [signup] and [limits] over them (`--policy`). */
 import { LOGIN_LIMITS, type LoginLimits } from "./auth.js";
 
 /** EU/EEA, the UK with the Crown Dependencies that share +44, Switzerland, the US and Canada. By the number's country,
@@ -19,10 +19,9 @@ export interface SignupPolicy {
 	flow_ttl: number; // seconds a flow lives after its last step
 	per_email_day: number; // code emails to one address, 24 h, across flows
 	per_phone_day: number; // SMS to one number, 24 h, across flows
-	per_ip_flows_hour: number;
+	per_ip_flows_hour: number; // checks begun from one network, an hour
 	per_ip_emails_day: number;
 	per_ip_sms_day: number;
-	min_password: number;
 	work_email: boolean; // refuse personal mailboxes at free providers (gmail.com …); throwaway ones are always refused
 }
 
@@ -54,7 +53,6 @@ export const SIGNUP_DEFAULTS: SignupPolicy = {
 	per_ip_flows_hour: 10,
 	per_ip_emails_day: 10,
 	per_ip_sms_day: 5,
-	min_password: 10,
 	work_email: true,
 };
 

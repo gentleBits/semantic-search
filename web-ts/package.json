@@ -1,5 +1,5 @@
 {
-  "name": "resumes-web",
+  "name": "semantic-search-demo-web",
   "private": true,
   "type": "module",
   "description": "The app server of `resumes web`: the page, the assistant on pi (pi-agent-core + pi-ai in-process), the ranking calls, settings and providers. The Python engine sits behind its HTTP API (`resumes engine`).",

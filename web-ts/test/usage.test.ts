@@ -99,6 +99,49 @@ test("a member's allowance: turns a day, dollars a day; the admin has none; ever
 	assert.equal(inWords(59_000), "1 min");
 });
 
+test("one number, one allowance: addresses that came through the check with the same number share the day's turns, sessions and the one at a time", async (t) => {
+	if (!engine) return t.skip("resumes engine or the index is missing");
+	const policy = { limits: { turns_per_day: 2, usd_per_day: 1 } };
+	const api = new Api(engine, undefined, { policy });
+	const member = (phone: string) => ({ hash: hashPassword("a long password"), created: "2026-10-06T10:00:00+00:00", role: "member", phone, phones: [phone], via: "check" });
+	writeFileSync(join(api.stateDir, "users.json"), JSON.stringify({ users: { [MEMBER]: member("+40712345678"), "bob@example.com": member("+40712345678"), "cid@example.com": member("+40712345679") } }));
+	// one server, three browsers: each person's cookie in turn
+	const cookie: Record<string, Record<string, string>> = {};
+	for (const name of [MEMBER, "bob@example.com", "cid@example.com"]) cookie[name] = (await as(api, name, "a long password")).headers;
+	const sid: Record<string, string> = {};
+	for (const name of Object.keys(cookie)) {
+		api.headers = cookie[name];
+		sid[name] = (await api.request("POST", "/api/sessions", {})).body.session.id;
+	}
+	const say = (name: string, text: string) => ((api.headers = cookie[name]), turn(api, sid[name], text));
+	api.script = ["ana's answer.", "bob's answer.", "cid's answer."];
+	assert.equal(last(await say(MEMBER, "who knows Elixir?"), "done").message.text, "ana's answer.");
+	assert.equal(last(await say("bob@example.com", "and Go?"), "done").message.text, "bob's answer.");
+	assert.equal(last(await say("bob@example.com", "and Rust?"), "error").message.code, "USAGE_LIMIT", "the number's 3rd turn of the day");
+	assert.equal(last(await say(MEMBER, "and Rust?"), "error").message.code, "USAGE_LIMIT", "for ana too");
+	api.headers = cookie[MEMBER];
+	const settings = (await api.request("GET", "/api/settings")).body;
+	assert.deepEqual([settings.allowance.turns, settings.allowance.sessions], [2, 2], "ana sees the number's day: two turns, two new sessions");
+	assert.deepEqual(ledger(api).map((l) => l.user), [MEMBER, "bob@example.com"], "each turn is still its sender's");
+	assert.equal(last(await say("cid@example.com", "hello"), "done").message.text, "cid's answer.", "another number, its own allowance");
+
+	// one at a time, across the people of one number
+	const busy = new Api(engine, undefined);
+	writeFileSync(join(busy.stateDir, "users.json"), readFileSync(join(api.stateDir, "users.json"), "utf-8"));
+	for (const name of [MEMBER, "bob@example.com"]) {
+		cookie[name] = (await as(busy, name, "a long password")).headers;
+		sid[name] = (await busy.request("POST", "/api/sessions", {})).body.session.id;
+	}
+	busy.script = [{ text: "slow answer.", delayMs: 1500 }, "later."];
+	busy.headers = cookie[MEMBER];
+	const slow = turn(busy, sid[MEMBER], "a slow question");
+	await new Promise((ok) => setTimeout(ok, 300));
+	busy.headers = cookie["bob@example.com"];
+	const ev = await turn(busy, sid["bob@example.com"], "meanwhile, on bob's laptop");
+	assert.equal(last(ev, "error").message.code, "BUSY");
+	assert.equal(last(await slow, "done").message.text, "slow answer.");
+});
+
 test("one turn at a time per member, across their searches; an admin may run two", async (t) => {
 	if (!engine) return t.skip("resumes engine or the index is missing");
 	const api = new Api(engine);

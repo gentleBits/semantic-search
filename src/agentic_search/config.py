@@ -68,14 +68,15 @@ class WebConfig:
     document: str = "resume"
     starters: list[str] = field(default_factory=lambda: list(STARTERS))
     attach: str = "a job description"    # what an added file usually is; shown only in the tooltip of "+ Add file" ("" = none)
-    signup: bool = False                 # sign-up by email code + SMS code ([signup].enabled, or `resumes web --signup`)
+    demo: bool = False                   # a "demo" label next to the name in the header and the tab's title
+    signup: bool = False                 # the email and phone check ([signup].enabled, or `resumes web --signup`)
     policy: dict = field(default_factory=dict)   # {"signup": {…}, "limits": {…}} from resumes.toml; the app server fills in the rest
 
 
 # What [signup] and [limits] may say; the app server holds the defaults (web-ts/src/policy.ts).
 SIGNUP_KEYS = {"sms_countries": list, "sms_per_day": int, "emails_per_day": int, "code_ttl": int, "code_tries": int, "codes_per_step": int,
                "resend_after": int, "flow_ttl": int, "per_email_day": int, "per_phone_day": int, "per_ip_flows_hour": int,
-               "per_ip_emails_day": int, "per_ip_sms_day": int, "min_password": int, "work_email": bool}
+               "per_ip_emails_day": int, "per_ip_sms_day": int, "work_email": bool}
 LIMITS_KEYS = {"turns_per_day": int, "usd_per_day": float, "at_once": int, "sessions_per_day": int, "max_usd_per_m_out": float, "login_ip_fails": int, "login_ip_window": int, "login_ip_wait": int}
 
 
@@ -207,6 +208,7 @@ def load(root: Path | None = None) -> Config:
         document=str(w.get("document", d.document)),
         starters=[str(x) for x in w.get("starters", d.starters)],
         attach=str(w.get("attach", d.attach)).strip(),
+        demo=bool(w.get("demo", d.demo)),
         signup=bool((raw.get("signup") or {}).get("enabled", False)),
         policy=policy_of(raw),
     )

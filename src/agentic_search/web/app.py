@@ -78,7 +78,7 @@ def collection(hub: Hub) -> dict:
     w = cfg.web
     return {
         "name": w.name, "noun": w.noun, "nouns": w.nouns, "document": w.document, "starters": w.starters,
-        "attach": w.attach,
+        "attach": w.attach, "demo": w.demo,
         "count": view.people(index, index.all_docs), "documents": len(index.all_docs), "index_version": index.version, "built_at": index.meta.get("built_at"),
         "currency": cfg.currency, "symbol": state.render.rate_symbol(cfg.currency),
         "limit": cfg.query.max_cards, "page_size": cfg.query.page_size,

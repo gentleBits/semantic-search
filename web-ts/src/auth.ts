@@ -1,6 +1,7 @@
 /**
- * The login: the users file (`.resumes/users.json`, scrypt hashes), the HMAC-signed login cookie, and lockouts after
- * wrong passwords. A record without a role is an admin; a blocked one cannot log in, but its email and phone stay taken.
+ * Who may search: the users file (`.resumes/users.json`), the HMAC-signed cookie, and lockouts after wrong passwords.
+ * A record is made by `resumes users add` (an admin, with a password) or by the email and phone check (a member, no
+ * password). A record without a role is an admin; a blocked one is let in no more, and its numbers with it.
  */
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -52,16 +53,29 @@ export function verifyPassword(password: string, stored: string): boolean {
 export const normalizeName = (name: unknown): string => String(name ?? "").trim().toLowerCase();
 
 export interface UserRecord {
-	hash: string;
+	hash: string | null; // a password: only the operator's accounts (`resumes users add`) have one
 	created: string | null;
 	role: Role; // absent in the file means admin (every `resumes users add`)
-	phone: string | null;
+	phone: string | null; // the number this person came through with last
 }
+
+/** What the check passed: a member's number is theirs from now on; `texted` when it was verified by a code just now. */
+export interface Passed {
+	phone: string;
+	texted: boolean;
+}
+
+const numbersOf = (rec: any): string[] => {
+	const all = [...(Array.isArray(rec?.phones) ? rec.phones : []), rec?.phone];
+	return [...new Set(all.filter((x): x is string => typeof x === "string" && /^\+\d{7,15}$/.test(x)))];
+};
 
 export class Users {
 	private seen = -1;
 	private map = new Map<string, UserRecord>();
-	private phones = new Map<string, string>();
+	private phones = new Map<string, string>(); // a number verified once → a person who came through with it (not blocked)
+	private blockedPhones = new Set<string>();
+	private byPhone = new Map<string, Set<string>>(); // a number → the people whose last number it is
 
 	constructor(public path: string) {}
 
@@ -77,6 +91,8 @@ export class Users {
 		this.seen = stamp;
 		this.map = new Map();
 		this.phones = new Map();
+		this.blockedPhones = new Set();
+		this.byPhone = new Map();
 		if (!stamp) return;
 		let raw: any = null;
 		try {
@@ -87,10 +103,17 @@ export class Users {
 		const users = raw && typeof raw === "object" && raw.users && typeof raw.users === "object" ? raw.users : {};
 		for (const [name, rec] of Object.entries(users as Record<string, any>)) {
 			const key = normalizeName(name);
-			if (!key || !rec || typeof rec.hash !== "string" || !rec.hash.startsWith("scrypt$")) continue;
+			if (!key || !rec || typeof rec !== "object") continue;
+			const hash = typeof rec.hash === "string" && rec.hash.startsWith("scrypt$") ? rec.hash : null;
+			const role: Role = ROLES.has(rec.role) ? rec.role : "admin";
+			if (!hash && role === "admin") continue; // an operator's account is a password; without one it is nothing
 			const phone = typeof rec.phone === "string" && rec.phone ? rec.phone : null;
-			this.map.set(key, { hash: rec.hash, created: typeof rec.created === "string" ? rec.created : null, role: ROLES.has(rec.role) ? rec.role : "admin", phone });
-			if (phone) this.phones.set(phone, key);
+			this.map.set(key, { hash, created: typeof rec.created === "string" ? rec.created : null, role, phone });
+			for (const n of numbersOf(rec)) {
+				if (role === "blocked") this.blockedPhones.add(n);
+				else if (!this.phones.has(n)) this.phones.set(n, key);
+			}
+			if (phone && role !== "blocked") this.byPhone.set(phone, (this.byPhone.get(phone) || new Set()).add(key));
 		}
 	}
 
@@ -122,9 +145,24 @@ export class Users {
 		return this.map.get(normalizeName(name))?.phone ?? null;
 	}
 
-	phoneOwner(phone: string): string | null {
+	/** A number someone came through with before (verified by a text once): it needs no code again. */
+	knownPhone(phone: string): boolean {
 		this.load();
-		return this.phones.get(phone) ?? null;
+		return this.phones.has(phone) && !this.blockedPhones.has(phone);
+	}
+
+	/** A number of a blocked person: let in with no address. */
+	blockedPhone(phone: string): boolean {
+		this.load();
+		return this.blockedPhones.has(phone);
+	}
+
+	/** Everyone who came through with this person's number last, the person included: they share one allowance. */
+	sharing(name: string): string[] {
+		this.load();
+		const key = normalizeName(name);
+		const phone = this.map.get(key)?.phone;
+		return phone ? [...(this.byPhone.get(phone) || [key])] : [key];
 	}
 
 	names(): string[] {
@@ -135,17 +173,20 @@ export class Users {
 	verify(name: string, password: string): boolean {
 		this.load();
 		const rec = this.map.get(normalizeName(name));
-		if (!rec || rec.role === "blocked") {
+		if (!rec || rec.role === "blocked" || !rec.hash) {
 			verifyPassword(password, rec?.hash || DECOY); // the same time whether the name exists, is blocked, or not
 			return false;
 		}
 		return verifyPassword(password, rec.hash);
 	}
 
-	/** Under the lock `resumes users …` takes too: name and phone are re-checked inside it. Never replaces an account. */
-	create(name: string, rec: { hash: string; role: Role; phone?: string | null; verified?: Record<string, string>; via?: string }): string {
+	/** The check passed for this address: a new member, or the record brought up to date (the number they came with,
+	 * when it was verified). Under the lock `resumes users …` takes too; an operator's account keeps its role, its
+	 * password and its numbers, and a blocked one is refused (BLOCKED) — the caller sent it no code, so it cannot get here. */
+	pass(name: string, how: Passed, now = new Date()): { name: string; made: boolean } {
 		const key = normalizeName(name);
-		if (!key || /\s/.test(key) || key.length > 200) throw new ResumesError("BAD_ARGUMENT", "the account name is one word, e.g. an email address");
+		if (!key || /\s/.test(key) || key.length > 200) throw new ResumesError("BAD_ARGUMENT", "the name is one word, e.g. an email address");
+		const iso = now.toISOString().replace(/\.\d{3}Z$/, "+00:00");
 		return withLock(join(dirname(this.path), USERS_LOCK), () => {
 			let raw: any = null;
 			try {
@@ -154,21 +195,22 @@ export class Users {
 				if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw new ResumesError("BUSY", `${this.path} cannot be read: ${(e as Error).message}`);
 			}
 			const users: Record<string, any> = raw && typeof raw === "object" && raw.users && typeof raw.users === "object" ? raw.users : {};
-			for (const [n, r] of Object.entries(users)) {
-				if (normalizeName(n) === key) throw new ResumesError("ACCOUNT_EXISTS", "There is already an account with this email — log in instead.");
-				if (rec.phone && r && (r as any).phone === rec.phone) throw new ResumesError("PHONE_TAKEN", "This number already belongs to an account.");
+			const found = Object.keys(users).find((n) => normalizeName(n) === key);
+			const rec: Record<string, any> = found ? { ...users[found] } : { created: iso, role: "member", via: "check" };
+			if (found && found !== key) delete users[found];
+			const role: Role = ROLES.has(rec.role) ? rec.role : "admin";
+			if (role === "blocked") throw new ResumesError("BLOCKED", "this address is blocked");
+			if (role === "admin" && !(typeof rec.hash === "string")) throw new ResumesError("BLOCKED", "an operator's account without a password");
+			rec.verified = { ...(rec.verified && typeof rec.verified === "object" ? rec.verified : {}), email: iso, ...(how.texted ? { phone: iso } : {}) };
+			rec.seen = iso;
+			if (role === "member") {
+				rec.phone = how.phone;
+				rec.phones = [...new Set([...numbersOf(rec), how.phone])];
 			}
-			users[key] = {
-				hash: rec.hash,
-				created: new Date().toISOString().replace(/\.\d{3}Z$/, "+00:00"),
-				role: rec.role,
-				...(rec.phone ? { phone: rec.phone } : {}),
-				...(rec.verified ? { verified: rec.verified } : {}),
-				via: rec.via || "signup",
-			};
+			users[key] = rec;
 			writeJsonAtomic(this.path, { users });
 			this.seen = -1;
-			return key;
+			return { name: key, made: !found };
 		});
 	}
 }

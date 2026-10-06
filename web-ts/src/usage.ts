@@ -1,7 +1,8 @@
 /**
  * What a member may spend on the assistant: a day's turns, model cost and new sessions, and one turn at a time
  * (`.resumes/usage.jsonl`, `.resumes/sessions-made.jsonl`). Admins, and everyone while login is off, have no limit.
- * An unpriced model reports $0, which is why turns are counted too.
+ * An unpriced model reports $0, which is why turns are counted too. The allowance is the phone number's: everyone who
+ * came through the check with the same number shares one (`sharing`), so more addresses buy no more.
  */
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -63,7 +64,12 @@ export class UsageBook {
 	readonly path: string;
 	readonly sessionsPath: string;
 
-	constructor(public stateDir: string, public policy: () => UsePolicy, public now: () => number = () => Date.now()) {
+	constructor(
+		public stateDir: string,
+		public policy: () => UsePolicy,
+		public now: () => number = () => Date.now(),
+		public sharing: (user: string) => string[] = (user) => [user],
+	) {
 		this.path = join(stateDir, USAGE_FILE);
 		this.sessionsPath = join(stateDir, SESSIONS_FILE);
 		const since = this.now() - DAY;
@@ -82,10 +88,18 @@ export class UsageBook {
 		}
 	}
 
+	/** One allowance: the people of one number, by a name that does not change while they share it. */
+	private group(user: string): { key: string; names: Set<string> } {
+		const names = new Set(this.sharing(user));
+		names.add(user);
+		return { key: [...names].sort()[0], names };
+	}
+
 	private recent(user: string): Line[] {
 		const since = this.now() - DAY;
 		if (this.lines.length && this.lines[0].at < since) this.lines = this.lines.filter((l) => l.at >= since);
-		return this.lines.filter((l) => l.user === user);
+		const { names } = this.group(user);
+		return this.lines.filter((l) => names.has(l.user));
 	}
 
 	day(user: string): { turns: number; cost: number } {
@@ -95,7 +109,7 @@ export class UsageBook {
 
 	/** Throws BUSY or USAGE_LIMIT for a limited person; else counts the turn as running until the returned `done`. */
 	begin(user: string | null, limited: boolean): () => void {
-		const key = user || "";
+		const key = user ? this.group(user).key : "";
 		if (limited && user) {
 			const p = this.policy();
 			if ((this.running.get(key) || 0) >= p.at_once) {
@@ -138,17 +152,22 @@ export class UsageBook {
 		return (sorted[0]?.at ?? this.now()) + DAY;
 	}
 
-	sessionsToday(user: string): number {
+	private madeBy(user: string): Made[] {
 		const since = this.now() - DAY;
 		if (this.made.length && this.made[0].at < since) this.made = this.made.filter((m) => m.at >= since);
-		return this.made.filter((m) => m.user === user).length;
+		const { names } = this.group(user);
+		return this.made.filter((m) => names.has(m.user));
+	}
+
+	sessionsToday(user: string): number {
+		return this.madeBy(user).length;
 	}
 
 	/** Throws SESSION_LIMIT; one with no session left may always start one: the page needs a session to open on. */
 	mayStartSession(user: string, hasNone: boolean): void {
 		const p = this.policy();
 		if (hasNone || this.sessionsToday(user) < p.sessions_per_day) return;
-		const mine = this.made.filter((m) => m.user === user);
+		const mine = this.madeBy(user);
 		const back = (mine[mine.length - p.sessions_per_day]?.at ?? this.now()) + DAY;
 		throw new SignupError(
 			"SESSION_LIMIT",

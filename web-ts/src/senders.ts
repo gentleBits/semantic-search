@@ -1,5 +1,5 @@
 /**
- * The sign-up's senders: an email by Resend, an SMS by Sakari (keys from the environment only), or a dry run
+ * The email and phone check's senders: an email by Resend, an SMS by Sakari (keys from the environment only), or a dry run
  * (`RESUMES_SIGNUP_DRYRUN=1`) that prints each message instead.
  */
 
@@ -25,6 +25,7 @@ export interface Email {
 	text: string;
 	html: string;
 	key: string; // idempotency: the same key is the same email, sent once
+	reply_to?: string; // where "Reply" goes
 }
 
 export interface Senders {
@@ -56,7 +57,7 @@ export class Resend {
 			r = await this.http(`${this.base}/emails`, {
 				method: "POST",
 				headers: { Authorization: `Bearer ${this.apiKey}`, "Content-Type": "application/json", "Idempotency-Key": m.key },
-				body: JSON.stringify({ from: this.from, to: [m.to], subject: m.subject, text: m.text, html: m.html }),
+				body: JSON.stringify({ from: this.from, to: [m.to], subject: m.subject, text: m.text, html: m.html, ...(m.reply_to ? { reply_to: m.reply_to } : {}) }),
 			});
 		} catch (e) {
 			throw new SendError("resend", `Resend cannot be reached: ${(e as Error).message}`);
@@ -153,12 +154,12 @@ export class DryRun implements Senders {
 	constructor(public print = true) {}
 	async email(m: Email) {
 		this.sent.push({ kind: "email", to: m.to, text: m.text, subject: m.subject });
-		if (this.print) console.log(`signup · dry run · email to ${m.to}: ${m.subject}`);
+		if (this.print) console.log(`check · dry run · email to ${m.to}: ${m.subject}`);
 		return { id: `dry-${this.sent.length}` };
 	}
 	async sms(to: string, text: string) {
 		this.sent.push({ kind: "sms", to, text });
-		if (this.print) console.log(`signup · dry run · SMS to ${to}: ${text.split("\n")[0]}`);
+		if (this.print) console.log(`check · dry run · SMS to ${to}: ${text.split("\n")[0]}`);
 		return { id: `dry-${this.sent.length}`, invalid: false };
 	}
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -72,6 +73,7 @@ def test_config_names_the_collection_and_what_the_app_server_needs(api):
     assert c["defaults"] == {"model": CFG.web.model, "effort": CFG.web.effort, "judge_model": CFG.web.judge_model, "judge_effort": CFG.web.judge_effort}
     assert c["judge"] == {"batch": 5, "parallel": 5, "note_max": 120} and "filter" in c["changes"] and "page" not in c["changes"]
     assert "model" not in c and "assistant" not in c, "the model is the app server's to name"
+    assert c["demo"] is CFG.web.demo
 
 
 def test_a_conversation_opens_on_everyone_and_reopens_as_left(api):
@@ -86,6 +88,7 @@ def test_a_conversation_opens_on_everyone_and_reopens_as_left(api):
     assert "overview" not in api.get("/state?overview=0").json()["state"]
     rows = api.http.get("/api/sessions").json()["sessions"]
     assert [(r["id"], r["count"], r["busy"]) for r in rows] == [(api.sid, 165, False)]
+    assert re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", api.sid), "a random UUID, as in /c/<id>"
     assert api.http.get("/api/sessions/web-nope").status_code == 404
     assert api.http.delete(f"/api/sessions/{api.sid}").json() == {"deleted": api.sid}
     assert api.http.get("/api/sessions").json()["sessions"] == []

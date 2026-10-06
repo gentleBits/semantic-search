@@ -1,12 +1,15 @@
 /**
- * The sign-up: verify the email, verify the phone, set a password → a member account. The flow lives on the server and
+ * The check before anyone may search: an email address and a phone number, every time. The address gets a code every
+ * time; the number gets one by text only the first time it is seen (a number that came through once needs none
+ * again), and an operator's address needs none. There is no password and no account to make: the person who passes
+ * gets the cookie, and a member's record in `users.json` is made or brought up to date. The flow lives on the server and
  * the browser holds only its id, so no step can be skipped and no counter reset from the browser. Codes are kept only
  * as HMACs; every send goes to `.resumes/signup-log.jsonl`, which the limits count, so a restart resets no limit.
  */
 import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Users, hashPassword } from "./auth.js";
+import type { Users } from "./auth.js";
 import { ResumesError } from "./errors.js";
 import { writeJsonAtomic, writeTextAtomic } from "./files.js";
 import { MailDomains } from "./mail-domains.js";
@@ -17,6 +20,7 @@ import { SendError, type Senders } from "./senders.js";
 export const FLOWS_FILE = "signups.json";
 export const LEDGER_FILE = "signup-log.jsonl";
 export const PRODUCT = "Semantic search";
+const VERSION = 2; // flows of the older sign-up with a password are not read back
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
 const KEEP_DAYS = 30;
@@ -28,25 +32,28 @@ export class SignupError extends Error {
 	}
 }
 
-export type Step = "email" | "email_code" | "phone" | "phone_code" | "password";
+/** details: the form (no flow); email_code: the code sent to the address; phone: a number to text (the first one could
+ * not be texted, or the person wants another); phone_code: the code texted to a number seen for the first time. */
+export type Step = "details" | "email_code" | "phone" | "phone_code";
 
 export interface Flow {
+	v: number;
 	id: string;
 	created: number;
 	touched: number;
 	ip: string;
 	email: string;
-	email_known: boolean; // the address had an account when the flow began: it got "you already have an account", no code
 	email_code: string | null;
 	email_exp: number;
 	email_tries: number;
 	email_sends: number[];
 	email_ok: number | null;
-	phone: string | null;
+	phone: string | null; // the number given (E.164); null after "use another number" or an undeliverable one
+	texted: string | null; // the number the last text of this flow went to
 	phone_code: string | null;
 	phone_exp: number;
 	phone_tries: number;
-	phone_sends: number[]; // every SMS of this flow, whichever number
+	phone_sends: number[]; // every text of this flow, whichever number
 	phone_ok: number | null;
 }
 
@@ -58,18 +65,27 @@ export interface View {
 	sends_left?: number;
 	expires_in?: number; // seconds this flow has left
 	expired?: boolean;
-	work_email?: boolean; // the first step: only a work address will do ([signup] work_email)
+	work_email?: boolean; // the form: only a work address will do ([signup] work_email)
+}
+
+/** The check is passed: the page is in. */
+export interface Done {
+	done: true;
+	user: string;
 }
 
 interface Entry {
 	at: number;
-	kind: "flow" | "email" | "sms" | "account";
+	kind: "flow" | "email" | "sms" | "passed";
 	to?: string;
 	ip: string;
 	ok?: boolean;
 	id?: string | null;
 	error?: string;
 	flow?: string;
+	phone?: string;
+	texted?: boolean;
+	made?: boolean;
 }
 
 /** Where the request came from, for the messages: the public name the page was reached by. */
@@ -126,7 +142,10 @@ export class Signup {
 		let dropped = false;
 		for (const [id, f] of Object.entries((raw && typeof raw === "object" ? raw.flows : null) || {})) {
 			const flow = f as Flow;
-			if (!flow || typeof flow !== "object" || flow.id !== id || typeof flow.email !== "string") continue;
+			if (!flow || typeof flow !== "object" || flow.id !== id || flow.v !== VERSION || typeof flow.email !== "string") {
+				dropped = true;
+				continue;
+			}
 			if (this.now() - flow.touched > ttl) {
 				dropped = true;
 				continue;
@@ -176,7 +195,7 @@ export class Signup {
 		try {
 			appendFileSync(this.ledgerPath, `${JSON.stringify(e)}\n`, { mode: 0o600 });
 		} catch (err) {
-			console.error(`signup · the ledger could not be written: ${(err as Error).message}`);
+			console.error(`check · the ledger could not be written: ${(err as Error).message}`);
 		}
 	}
 
@@ -207,24 +226,21 @@ export class Signup {
 		return f;
 	}
 
-	step(f: Flow): Step {
+	step(f: Flow): Exclude<Step, "details"> {
 		if (!f.email_ok) return "email_code";
-		if (!f.phone_ok) return f.phone ? "phone_code" : "phone";
-		return "password";
+		return f.phone && f.texted === f.phone ? "phone_code" : "phone";
 	}
 
 	view(f: Flow | null, hadOne = false): View {
 		const p = this.policy();
-		if (!f) return { step: "email", ...(hadOne ? { expired: true } : {}), work_email: p.work_email };
+		if (!f) return { step: "details", ...(hadOne ? { expired: true } : {}), work_email: p.work_email };
 		const step = this.step(f);
 		const v: View = { step, email: f.email, expires_in: Math.max(0, Math.ceil((f.touched + p.flow_ttl * 1000 - this.now()) / 1000)) };
 		if (f.phone) v.phone = formatPhone(f.phone);
-		const sends = step === "email_code" ? f.email_sends : step === "phone_code" || step === "phone" ? f.phone_sends : null;
-		if (sends) {
-			const last = sends.at(-1);
-			v.resend_in = last ? Math.max(0, Math.ceil((last + p.resend_after * 1000 - this.now()) / 1000)) : 0;
-			v.sends_left = Math.max(0, p.codes_per_step - sends.length);
-		}
+		const sends = step === "email_code" ? f.email_sends : f.phone_sends;
+		const last = sends.at(-1);
+		v.resend_in = last ? Math.max(0, Math.ceil((last + p.resend_after * 1000 - this.now()) / 1000)) : 0;
+		v.sends_left = Math.max(0, p.codes_per_step - sends.length);
 		return v;
 	}
 
@@ -241,73 +257,66 @@ export class Signup {
 	private emailLimits(to: string, ip: string): void {
 		const p = this.policy();
 		if (this.count("email", DAY) >= p.emails_per_day) {
-			console.warn(`signup · paused: ${p.emails_per_day} emails in 24 h (the server's budget, [signup] emails_per_day)`);
-			throw new SignupError("PAUSED", 503, "Sign-up is paused for today — try again tomorrow.", { retry_in: this.reopensIn("email", DAY) });
+			console.warn(`check · paused: ${p.emails_per_day} emails in 24 h (the server's budget, [signup] emails_per_day)`);
+			throw new SignupError("PAUSED", 503, "We can't send any more codes today. Please try again tomorrow.", { retry_in: this.reopensIn("email", DAY) });
 		}
 		if (this.count("email", DAY, (e) => e.to === to) >= p.per_email_day) {
-			throw new SignupError("LIMIT", 429, "Too many codes for this address today — try again tomorrow.", { retry_in: this.reopensIn("email", DAY, (e) => e.to === to) });
+			throw new SignupError("LIMIT", 429, "Too many codes for this address today. Please try again tomorrow.", { retry_in: this.reopensIn("email", DAY, (e) => e.to === to) });
 		}
 		if (this.count("email", DAY, (e) => e.ip === ip) >= p.per_ip_emails_day) {
-			throw new SignupError("LIMIT", 429, "Too many codes from your network today — try again tomorrow.", { retry_in: this.reopensIn("email", DAY, (e) => e.ip === ip) });
+			throw new SignupError("LIMIT", 429, "Too many codes from your network today. Please try again tomorrow.", { retry_in: this.reopensIn("email", DAY, (e) => e.ip === ip) });
 		}
 	}
 
 	private smsLimits(to: string, ip: string): void {
 		const p = this.policy();
 		if (this.count("sms", DAY) >= p.sms_per_day) {
-			console.warn(`signup · paused: ${p.sms_per_day} SMS in 24 h (the server's budget, [signup] sms_per_day)`);
-			throw new SignupError("PAUSED", 503, "Sign-up is paused for today — try again tomorrow.", { retry_in: this.reopensIn("sms", DAY) });
+			console.warn(`check · paused: ${p.sms_per_day} SMS in 24 h (the server's budget, [signup] sms_per_day)`);
+			throw new SignupError("PAUSED", 503, "We can't send any more text messages today. Please try again tomorrow.", { retry_in: this.reopensIn("sms", DAY) });
 		}
 		if (this.count("sms", DAY, (e) => e.to === to) >= p.per_phone_day) {
-			throw new SignupError("LIMIT", 429, "Too many codes to this number today — try again tomorrow, or use another number.", { retry_in: this.reopensIn("sms", DAY, (e) => e.to === to) });
+			throw new SignupError("LIMIT", 429, "Too many codes to this number today. Please try again tomorrow, or use another number.", { retry_in: this.reopensIn("sms", DAY, (e) => e.to === to) });
 		}
 		if (this.count("sms", DAY, (e) => e.ip === ip) >= p.per_ip_sms_day) {
-			throw new SignupError("LIMIT", 429, "Too many text messages from your network today — try again tomorrow.", { retry_in: this.reopensIn("sms", DAY, (e) => e.ip === ip) });
+			throw new SignupError("LIMIT", 429, "Too many text messages from your network today. Please try again tomorrow.", { retry_in: this.reopensIn("sms", DAY, (e) => e.ip === ip) });
 		}
 	}
 
-	private stepLimits(sends: number[], what: "email" | "phone"): void {
+	private stepLimits(sends: number[]): void {
 		const p = this.policy();
-		if (sends.length >= p.codes_per_step) {
-			throw new SignupError("LIMIT", 429, `That was the last code for this sign-up${what === "phone" ? "'s phone step" : ""} — start again.`);
-		}
+		if (sends.length >= p.codes_per_step) throw new SignupError("LIMIT", 429, "That was the last code we can send this time. Please start again.");
 		const last = sends.at(-1);
 		if (last && this.now() - last < p.resend_after * 1000) {
 			const wait = Math.ceil((last + p.resend_after * 1000 - this.now()) / 1000);
-			throw new SignupError("WAIT", 429, `Wait ${wait} s before asking for another code.`, { retry_in: wait });
+			throw new SignupError("WAIT", 429, `Please wait ${wait} s before asking for another code.`, { retry_in: wait });
 		}
 	}
 
-	private async sendEmail(f: Flow, ip: string, site: Site): Promise<void> {
+	private async sendEmail(f: Flow, ip: string): Promise<void> {
 		const p = this.policy();
-		const blocked = f.email_known && this.users.taken(f.email) && !this.users.has(f.email);
-		let code = "";
+		const blocked = this.users.role(f.email) === "blocked";
+		const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
 		f.email_tries = 0;
-		if (f.email_known) f.email_code = null;
-		else {
-			code = String(randomInt(0, 1_000_000)).padStart(6, "0");
-			f.email_code = this.hmac(f, "email", code);
-		}
+		f.email_code = blocked ? null : this.hmac(f, "email", code);
 		f.email_exp = this.now() + p.code_ttl * 1000;
 		f.email_sends.push(this.now());
 		this.touch(f); // saved before the provider is called: a failed send still counts, and a retry sees the floor
 		const e = this.note({ at: this.now(), kind: "email", to: f.email, ip, flow: f.id.slice(0, 8) });
 		if (blocked) {
-			// a blocked account gets no mail at all; the answer is the same as for anyone (nothing to learn from it)
+			// a blocked address gets no mail at all; the answer is the same as for anyone (nothing to learn from it)
 			Object.assign(e, { ok: true, id: null, error: "blocked: not sent" });
 			this.write(e);
 			return;
 		}
-		const m = f.email_known ? knownEmail(site) : codeEmail(code, p.code_ttl);
 		try {
-			const r = await this.senders.email({ to: f.email, ...m, key: `${f.id}-email-${f.email_sends.length}` });
+			const r = await this.senders.email({ to: f.email, ...codeEmail(code, p.code_ttl), key: `${f.id}-email-${f.email_sends.length}` });
 			Object.assign(e, { ok: true, id: r.id });
 			this.write(e);
 		} catch (err) {
 			Object.assign(e, { ok: false, error: String((err as Error)?.message || err).slice(0, 300) });
 			this.write(e);
-			console.error(`signup · the email to ${f.email} was not sent: ${e.error}`);
-			if (err instanceof SendError) throw new SignupError("SEND_FAILED", 502, "The email could not be sent just now — try “Resend code” in a minute.");
+			console.error(`check · the email to ${f.email} was not sent: ${e.error}`);
+			if (err instanceof SendError) throw new SignupError("SEND_FAILED", 502, "The email could not be sent just now. Please try “Resend code” in a minute.");
 			throw err;
 		}
 	}
@@ -316,6 +325,7 @@ export class Signup {
 		const p = this.policy();
 		const code = String(randomInt(0, 1_000_000)).padStart(6, "0");
 		f.phone = phone;
+		f.texted = phone;
 		f.phone_ok = null;
 		f.phone_code = this.hmac(f, "phone", code);
 		f.phone_exp = this.now() + p.code_ttl * 1000;
@@ -329,8 +339,8 @@ export class Signup {
 		} catch (err) {
 			Object.assign(e, { ok: false, error: String((err as Error)?.message || err).slice(0, 300) });
 			this.write(e);
-			console.error(`signup · the SMS to ${phone} was not sent: ${e.error}`);
-			if (err instanceof SendError) throw new SignupError("SEND_FAILED", 502, "The text message could not be sent just now — try “Resend code” in a minute.");
+			console.error(`check · the SMS to ${phone} was not sent: ${e.error}`);
+			if (err instanceof SendError) throw new SignupError("SEND_FAILED", 502, "The text message could not be sent just now. Please try “Resend code” in a minute.", { view: this.view(this.flows.get(f.id) || f) });
 			throw err;
 		}
 		Object.assign(e, { ok: !r.invalid, id: r.id, ...(r.invalid ? { error: "undeliverable" } : {}) });
@@ -339,19 +349,28 @@ export class Signup {
 			const g = this.flows.get(f.id) || f; // the flow as it is now (an await happened)
 			if (g.phone === phone) {
 				g.phone = null;
+				g.texted = null;
 				g.phone_code = null;
 				this.touch(g);
 			}
-			throw new SignupError("UNDELIVERABLE", 422, "This number can't receive text messages — use another one.");
+			throw new SignupError("UNDELIVERABLE", 422, "This number can't receive text messages. Please use another one.", { view: this.view(g) });
 		}
 	}
 
-	/** Step 1: an address → a new flow and its code sent. The answer is the same whether the address has an account or
-	 * not: the email says which. */
-	async start(oldId: string | null | undefined, input: unknown, ip: string, site: Site): Promise<{ id: string; view: View }> {
+	private parsedPhone(input: unknown): string {
+		const parsed = parsePhone(input, this.policy().sms_countries);
+		if (parsed.ok) return parsed.e164;
+		if (parsed.why === "PHONE_COUNTRY") throw new SignupError("PHONE_COUNTRY", 422, `We can't send text messages to numbers in this country (${parsed.country}).`);
+		throw new SignupError("BAD_PHONE", 422, "Please type the number with its country code, e.g. +40 712 345 678.");
+	}
+
+	/** The form: an address and a number → a new flow, and a code to the address. The number is only read here: whether
+	 * it needs a text is decided once the address is proved, so nothing about it is told to someone who has not. */
+	async start(oldId: string | null | undefined, input: { email?: unknown; phone?: unknown }, ip: string): Promise<{ id: string; view: View }> {
 		const p = this.policy();
-		const email = normalizeEmail(input);
+		const email = normalizeEmail(input?.email);
 		if (!EMAIL.test(email) || email.length > 200) throw new SignupError("BAD_EMAIL", 422, "That doesn't look like an email address.");
+		const phone = this.parsedPhone(input?.phone);
 		const mail = await this.mail.check(email, p.work_email);
 		if (!mail.ok) {
 			if (mail.why === "DISPOSABLE_EMAIL") throw new SignupError(mail.why, 422, "Please use your business email address, as temporary addresses are not accepted.");
@@ -359,24 +378,25 @@ export class Signup {
 			throw new SignupError(mail.why, 422, `Please check the address, as ${mail.domain} does not appear to receive email.`);
 		}
 		if (this.count("flow", HOUR, (e) => e.ip === ip) >= p.per_ip_flows_hour) {
-			throw new SignupError("LIMIT", 429, "Too many sign-ups from your network in the last hour — try again later.", { retry_in: this.reopensIn("flow", HOUR, (e) => e.ip === ip) });
+			throw new SignupError("LIMIT", 429, "Too many attempts from your network in the last hour. Please try again later.", { retry_in: this.reopensIn("flow", HOUR, (e) => e.ip === ip) });
 		}
 		this.emailLimits(email, ip);
 		if (oldId && this.flows.has(oldId)) this.flows.delete(oldId);
 		const now = this.now();
 		const f: Flow = {
+			v: VERSION,
 			id: randomBytes(32).toString("base64url"),
 			created: now,
 			touched: now,
 			ip,
 			email,
-			email_known: this.users.taken(email),
 			email_code: null,
 			email_exp: 0,
 			email_tries: 0,
 			email_sends: [],
 			email_ok: null,
-			phone: null,
+			phone,
+			texted: null,
 			phone_code: null,
 			phone_exp: 0,
 			phone_tries: 0,
@@ -384,13 +404,13 @@ export class Signup {
 			phone_ok: null,
 		};
 		this.write(this.note({ at: now, kind: "flow", ip, flow: f.id.slice(0, 8) }));
-		await this.sendEmail(f, ip, site);
+		await this.sendEmail(f, ip);
 		return { id: f.id, view: this.view(f) };
 	}
 
 	private need(id: string | null | undefined): Flow {
 		const f = this.flow(id);
-		if (!f) throw new SignupError("SIGNUP_EXPIRED", 410, "This sign-up has run out — start again.");
+		if (!f) throw new SignupError("SIGNUP_EXPIRED", 410, "That took too long. Please start again.");
 		return f;
 	}
 
@@ -401,8 +421,8 @@ export class Signup {
 		const tries = step === "email" ? f.email_tries : f.phone_tries;
 		const stored = step === "email" ? f.email_code : f.phone_code;
 		const exp = step === "email" ? f.email_exp : f.phone_exp;
-		if (tries >= p.code_tries) throw new SignupError("TOO_MANY_TRIES", 429, "Too many wrong tries — ask for a new code.");
-		if (stored && this.now() > exp) throw new SignupError("CODE_EXPIRED", 410, "That code has expired — ask for a new one.");
+		if (tries >= p.code_tries) throw new SignupError("TOO_MANY_TRIES", 429, "Too many wrong tries. Please ask for a new code.");
+		if (stored && this.now() > exp) throw new SignupError("CODE_EXPIRED", 410, "That code has expired. Please ask for a new one.");
 		const want = Buffer.from(stored || "x".repeat(43));
 		const got = Buffer.from(this.hmac(f, step, code));
 		const right = !!stored && want.length === got.length && timingSafeEqual(want, got);
@@ -414,45 +434,68 @@ export class Signup {
 			if (step === "email") f.email_code = null; // burned: only a new code can do now
 			else f.phone_code = null;
 			this.touch(f);
-			throw new SignupError("TOO_MANY_TRIES", 429, "Too many wrong tries — ask for a new code.");
+			throw new SignupError("TOO_MANY_TRIES", 429, "Too many wrong tries. Please ask for a new code.");
 		}
 		this.touch(f);
 		const left = p.code_tries - n;
 		throw new SignupError("WRONG_CODE", 422, `That code is not right — ${left} ${left === 1 ? "try" : "tries"} left.`, { tries_left: left });
 	}
 
-	verifyEmail(id: string | null | undefined, code: unknown): View {
+	/** After the address is proved, for this number: in at once when it came through before (or the address is an
+	 * operator's), else a text to it. Nothing of the flow changes before the limits let the text go, so a refusal (or a
+	 * second request at the same moment) leaves it as it was; every refusal carries where the flow stands. */
+	private async onward(f: Flow, phone: string, ip: string, site: Site): Promise<View | Done> {
+		const refuse = (e: unknown) => {
+			if (e instanceof SignupError) e.extra = { ...e.extra, view: this.view(f) };
+			return e;
+		};
+		if (this.users.blockedPhone(phone)) {
+			if (f.phone === phone) {
+				f.phone = null;
+				f.texted = null;
+				f.phone_code = null;
+				this.touch(f);
+			}
+			throw refuse(new SignupError("PHONE_BLOCKED", 403, "This number can't be used here. Please use another one."));
+		}
+		if (this.users.role(f.email) === "admin" || this.users.knownPhone(phone)) {
+			f.phone = phone;
+			return this.finish(f, ip, false);
+		}
+		try {
+			this.stepLimits(f.phone_sends); // across numbers: changing the number does not buy more texts
+			this.smsLimits(phone, ip);
+		} catch (e) {
+			throw refuse(e);
+		}
+		await this.sendSms(f, phone, ip, site);
+		return this.view(this.flows.get(f.id) || f);
+	}
+
+	async verifyEmail(id: string | null | undefined, code: unknown, ip: string, site: Site): Promise<View | Done> {
 		const f = this.need(id);
 		if (f.email_ok) return this.view(f); // a double submit: already done
 		this.check(f, "email", code);
 		f.email_ok = this.now();
 		f.email_code = null;
 		this.touch(f);
-		return this.view(f);
+		return f.phone ? this.onward(f, f.phone, ip, site) : this.view(f);
 	}
 
-	/** Step 3: a number → its code by SMS. A new number restarts this step; the email stays verified. */
-	async phone(id: string | null | undefined, input: unknown, ip: string, site: Site): Promise<View> {
+	/** Another number, after the address is proved ("use another number", or the first could not be texted). */
+	async phone(id: string | null | undefined, input: unknown, ip: string, site: Site): Promise<View | Done> {
 		const f = this.need(id);
-		if (!f.email_ok) throw new SignupError("OUT_OF_ORDER", 409, "Verify your email first.", { view: this.view(f) });
-		const p = this.policy();
-		const parsed = parsePhone(input, p.sms_countries);
-		if (!parsed.ok) {
-			if (parsed.why === "PHONE_COUNTRY") throw new SignupError("PHONE_COUNTRY", 422, `Text messages can't be sent to numbers of this country (${parsed.country}) from here.`);
-			throw new SignupError("BAD_PHONE", 422, "Type the number with its country code, e.g. +40 712 345 678.");
-		}
-		if (f.phone_ok && f.phone === parsed.e164) return this.view(f);
-		if (this.users.phoneOwner(parsed.e164)) throw new SignupError("PHONE_TAKEN", 409, "This number already belongs to an account.");
-		this.stepLimits(f.phone_sends, "phone"); // across numbers: changing the number does not buy more texts
-		this.smsLimits(parsed.e164, ip);
-		await this.sendSms(f, parsed.e164, ip, site);
-		return this.view(this.flows.get(f.id) || f);
+		if (!f.email_ok) throw new SignupError("OUT_OF_ORDER", 409, "Please enter the code from your email first.", { view: this.view(f) });
+		const phone = this.parsedPhone(input);
+		if (f.texted === phone && f.phone === phone) return this.view(f); // a double submit: the text has gone
+		return this.onward(f, phone, ip, site);
 	}
 
 	changePhone(id: string | null | undefined): View {
 		const f = this.need(id);
-		if (!f.email_ok) throw new SignupError("OUT_OF_ORDER", 409, "Verify your email first.", { view: this.view(f) });
+		if (!f.email_ok) throw new SignupError("OUT_OF_ORDER", 409, "Please enter the code from your email first.", { view: this.view(f) });
 		f.phone = null;
+		f.texted = null;
 		f.phone_code = null;
 		f.phone_ok = null;
 		f.phone_tries = 0;
@@ -460,26 +503,26 @@ export class Signup {
 		return this.view(f);
 	}
 
-	verifyPhone(id: string | null | undefined, code: unknown): View {
+	verifyPhone(id: string | null | undefined, code: unknown, ip: string): Done | View {
 		const f = this.need(id);
-		if (!f.email_ok || !f.phone) throw new SignupError("OUT_OF_ORDER", 409, f.email_ok ? "Ask for a code to your phone first." : "Verify your email first.", { view: this.view(f) });
-		if (f.phone_ok) return this.view(f);
+		if (!f.email_ok || !f.phone || f.texted !== f.phone) {
+			throw new SignupError("OUT_OF_ORDER", 409, f.email_ok ? "Please ask for a code to your phone first." : "Please enter the code from your email first.", { view: this.view(f) });
+		}
 		this.check(f, "phone", code);
 		f.phone_ok = this.now();
 		f.phone_code = null;
-		this.touch(f);
-		return this.view(f);
+		return this.finish(f, ip, true);
 	}
 
 	async resend(id: string | null | undefined, ip: string, site: Site): Promise<View> {
 		const f = this.need(id);
 		const step = this.step(f);
 		if (step === "email_code") {
-			this.stepLimits(f.email_sends, "email");
+			this.stepLimits(f.email_sends);
 			this.emailLimits(f.email, ip);
-			await this.sendEmail(f, ip, site);
+			await this.sendEmail(f, ip);
 		} else if (step === "phone_code" && f.phone) {
-			this.stepLimits(f.phone_sends, "phone");
+			this.stepLimits(f.phone_sends);
 			this.smsLimits(f.phone, ip);
 			await this.sendSms(f, f.phone, ip, site);
 		} else {
@@ -488,35 +531,26 @@ export class Signup {
 		return this.view(this.flows.get(f.id) || f);
 	}
 
-	/** Step 5: the password → the account, written as a member with the verified phone; the flow is used up. Checked
-	 * and written in one synchronous block (scrypt included), so two requests of one flow cannot both get here. */
-	finish(id: string | null | undefined, password: unknown, ip: string): string {
-		const f = this.need(id);
-		if (!f.email_ok || !f.phone_ok || !f.phone) throw new SignupError("OUT_OF_ORDER", 409, f.email_ok ? "Verify your phone first." : "Verify your email first.", { view: this.view(f) });
-		const p = this.policy();
-		const pw = typeof password === "string" ? password : "";
-		if (pw.length < p.min_password) throw new SignupError("WEAK_PASSWORD", 422, `The password needs at least ${p.min_password} characters.`);
-		if (pw.length > 200) throw new SignupError("WEAK_PASSWORD", 422, "The password is at most 200 characters.");
-		if (pw.trim().toLowerCase() === f.email) throw new SignupError("WEAK_PASSWORD", 422, "The password can't be your email address.");
-		const iso = (t: number) => new Date(t).toISOString().replace(/\.\d{3}Z$/, "+00:00");
-		let name: string;
+	/** Passed: the record is made or brought up to date and the flow is used up. Synchronous from the check of the last
+	 * code to the write, so two requests of one flow cannot both get here. */
+	private finish(f: Flow, ip: string, texted: boolean): Done {
+		const phone = f.phone!;
+		let r: { name: string; made: boolean };
 		try {
-			name = this.users.create(f.email, { hash: hashPassword(pw), role: "member", phone: f.phone, verified: { email: iso(f.email_ok), phone: iso(f.phone_ok) }, via: "signup" });
+			r = this.users.pass(f.email, { phone, texted }, new Date(this.now()));
 		} catch (e) {
-			if (e instanceof ResumesError && (e.code === "ACCOUNT_EXISTS" || e.code === "PHONE_TAKEN")) {
-				if (e.code === "ACCOUNT_EXISTS") {
-					this.flows.delete(f.id);
-					this.saveFlows();
-				}
-				throw new SignupError(e.code, 409, e.message);
+			if (e instanceof ResumesError && e.code === "BLOCKED") {
+				this.flows.delete(f.id);
+				this.saveFlows();
+				throw new SignupError("SIGNUP_EXPIRED", 410, "That took too long. Please start again.");
 			}
 			throw e;
 		}
 		this.flows.delete(f.id);
 		this.saveFlows();
-		this.write(this.note({ at: this.now(), kind: "account", to: name, ip, flow: f.id.slice(0, 8) }));
-		console.log(`signup · account made: ${name} (${f.phone})`);
-		return name;
+		this.write(this.note({ at: this.now(), kind: "passed", to: r.name, phone, texted, made: r.made, ip, flow: f.id.slice(0, 8) }));
+		console.log(`check · passed: ${r.name} (${phone}${texted ? ", texted" : ""}${r.made ? ", new" : ""})`);
+		return { done: true, user: r.name };
 	}
 
 	cancel(id: string | null | undefined): void {
@@ -539,21 +573,10 @@ export function codeEmail(code: string, ttlSeconds: number): { subject: string; 
 	const minutes = Math.round(ttlSeconds / 60);
 	return {
 		subject: `${code} is your ${PRODUCT} code`,
-		text: `Your ${PRODUCT} code is ${code}\n\nType it on the sign-up page. It expires in ${minutes} minutes.\n\nIf you didn't ask for it, ignore this email: no account is made without it.\n`,
-		html: frame(`<p style="margin:0 0 12px;font-size:14px">Your sign-up code:</p>
+		text: `Your ${PRODUCT} code is ${code}\n\nEnter it on the page to continue. It expires in ${minutes} minutes.\n\nIf you didn't ask for it, you can ignore this email.\n`,
+		html: frame(`<p style="margin:0 0 12px;font-size:14px">Your code:</p>
 <div style="font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:34px;font-weight:700;letter-spacing:6px;margin:0 0 16px">${esc(code)}</div>
-<p style="margin:0 0 10px;font-size:13px;color:#475569">Type it on the sign-up page. It expires in ${minutes} minutes.</p>
-<p style="margin:0;font-size:12px;color:#64748b">If you didn't ask for it, ignore this email: no account is made without it.</p>`),
-	};
-}
-
-export function knownEmail(site: Site): { subject: string; text: string; html: string } {
-	const url = `${site.https ? "https" : "http"}://${site.host}`;
-	return {
-		subject: `You already have a ${PRODUCT} account`,
-		text: `Someone (hopefully you) tried to sign up to ${PRODUCT} with this address, but it already has an account.\n\nLog in at ${url}\n\nIf it wasn't you, ignore this email: nothing has changed.\n`,
-		html: frame(`<p style="margin:0 0 12px;font-size:14px">Someone (hopefully you) tried to sign up with this address, but it already has an account.</p>
-<p style="margin:0 0 16px;font-size:14px">Log in at <b>${esc(url)}</b></p>
-<p style="margin:0;font-size:12px;color:#64748b">If it wasn't you, ignore this email: nothing has changed.</p>`),
+<p style="margin:0 0 10px;font-size:13px;color:#475569">Enter it on the page to continue. It expires in ${minutes} minutes.</p>
+<p style="margin:0;font-size:12px;color:#64748b">If you didn't ask for it, you can ignore this email.</p>`),
 	};
 }

@@ -356,6 +356,13 @@ run("only the server's own page is answered", async (api) => {
 	assert.equal((await api.request("GET", "/js/main.js")).headers.get("content-type"), "text/javascript; charset=utf-8");
 	assert.equal((await api.request("GET", "/../package.json")).status, 404);
 	assert.equal((await api.request("GET", "/nope.html")).status, 404);
+	// a search's address is the page itself, as chat apps do it: /c/<id>
+	assert.match(api.sid, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, "a new search's id is a random UUID");
+	const at = await api.request("GET", `/c/${api.sid}`);
+	assert.ok(at.status === 200 && at.text === page.text, "/c/<id> serves the page");
+	assert.ok(at.text.includes('src="/js/main.js"') && at.text.includes('href="/app.css"'), "its files from the root, whatever the address");
+	assert.equal((await api.request("GET", "/c/web-2026-10-01-1125-3ded")).status, 200, "an older id's address too");
+	assert.equal((await api.request("GET", `/c/${api.sid}/r001572`)).status, 404, "nothing after the id");
 });
 
 run("sessions: list, reopen as left, delete; the person routes are proxied", async (api) => {

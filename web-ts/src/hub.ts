@@ -1,6 +1,6 @@
 /**
  * What the app server keeps in memory: the engine, the settings, pi's registry, the providers' model lists, the login
- * and sign-up, and the running turns. The model is chosen per turn, so a settings change applies to the next message.
+ * and the email and phone check, and the running turns. The model is chosen per turn, so a settings change applies to the next message.
  */
 import { join } from "node:path";
 import { Auth, type Role } from "./auth.js";
@@ -49,7 +49,7 @@ export class Hub {
 	readonly owners: Owners;
 	readonly policy: Policy;
 	readonly signup: Signup | null;
-	readonly signupOff: string | null; // why sign-up is off although it was asked for
+	readonly signupOff: string | null; // why the check is off although it was asked for
 	readonly usage: UsageBook;
 	readonly picks: UserPicks;
 	features: Feature[] = []; // optional parts found at start (features.ts)
@@ -73,7 +73,7 @@ export class Hub {
 		}
 		this.signup = signup;
 		this.signupOff = off;
-		this.usage = new UsageBook(opts.stateDir, () => this.policy.limits, now);
+		this.usage = new UsageBook(opts.stateDir, () => this.policy.limits, now, (user) => this.auth.users.sharing(user));
 		this.picks = UserPicks.in(opts.stateDir);
 		this.owners = Owners.in(opts.stateDir);
 		this.settings = Settings.in(opts.stateDir);

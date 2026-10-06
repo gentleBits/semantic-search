@@ -1,4 +1,4 @@
-// Sign-up without HTTP: the users file, the flow's rules, the providers, phones, addresses and the policy.
+// The email and phone check without HTTP: the users file, the flow's rules, the providers, phones, addresses and the policy.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -12,7 +12,7 @@ import { MailDomains, type MxAnswer, listed, mailLists } from "../src/mail-domai
 import { formatPhone, parsePhone } from "../src/phone.js";
 import { SIGNUP_DEFAULTS, type SignupPolicy, policyOf } from "../src/policy.js";
 import { DryRun, type Http, Resend, Sakari, SendError, type Senders, sendersFrom } from "../src/senders.js";
-import { Signup, SignupError, ipKey } from "../src/signup.js";
+import { type Done, Signup, SignupError, type View, ipKey } from "../src/signup.js";
 import { ROOT } from "./helpers.js";
 
 const PYTHON = join(ROOT, ".venv", "bin", "python");
@@ -49,42 +49,76 @@ async function rejects(p: Promise<unknown> | (() => unknown), code: string, what
 	assert.fail(`${what}: expected ${code}, nothing was thrown`);
 }
 
-/** A flow whose email is verified. */
-async function verifiedEmail(r: ReturnType<typeof rig>, email = "ana@example.com", ip = IP) {
-	const { id } = await r.s.start(null, email, ip, SITE);
-	r.s.verifyEmail(id, r.lastCode("email"));
-	return id;
+const PHONE = "+40712345678";
+
+/** The form sent and the email's code given: the answer (a text sent, or in) and the flow's id. */
+async function throughEmail(r: ReturnType<typeof rig>, email = "ana@example.com", phone = PHONE, ip = IP) {
+	const { id } = await r.s.start(null, { email, phone }, ip);
+	const out = await r.s.verifyEmail(id, r.lastCode("email"), ip, SITE);
+	return { id, out };
 }
 
-test("the users file: roles, phones, create never replaces, others' fields kept, blocked accounts", () => {
+/** The whole check the first time: email code, text code, in. */
+async function firstTime(r: ReturnType<typeof rig>, email = "ana@example.com", phone = PHONE, ip = IP) {
+	const { id, out } = await throughEmail(r, email, phone, ip);
+	assert.equal((out as View).step, "phone_code", "a new number gets a text");
+	return r.s.verifyPhone(id, r.lastCode("sms"), ip) as Done;
+}
+
+const smsCount = (r: ReturnType<typeof rig>) => r.dry!.sent.filter((m) => m.kind === "sms").length;
+const readUsers = (dir: string) => JSON.parse(readFileSync(join(dir, "users.json"), "utf-8")).users;
+
+test("the users file: members without a password, the numbers they came with, an operator's account kept, blocked people and their numbers", () => {
 	const dir = mkdtempSync(join(tmpdir(), "resumes-users-"));
 	const path = join(dir, "users.json");
-	writeFileSync(path, JSON.stringify({ users: { "dana@example.com": { hash: hashPassword("cretzuel"), created: "2026-09-30T18:00:00+00:00", custom: 42 } } }));
+	writeFileSync(path, JSON.stringify({ users: { "dana@example.com": { hash: hashPassword("cretzuel"), created: "2026-09-30T18:00:00+00:00", custom: 42 }, "nopw@example.com": { created: "x" } } }));
 	const users = new Users(path);
 	assert.equal(users.role("dana@example.com"), "admin", "no role in the file: an admin");
-	assert.equal(users.create("Ana@Example.com", { hash: hashPassword("a long password"), role: "member", phone: "+40712345678", verified: { email: "e", phone: "p" } }), "ana@example.com");
-	const raw = JSON.parse(readFileSync(path, "utf-8"));
-	assert.equal(raw.users["dana@example.com"].custom, 42, "another record's fields are kept");
-	assert.deepEqual({ ...raw.users["ana@example.com"], hash: "", created: "" }, { hash: "", created: "", role: "member", phone: "+40712345678", verified: { email: "e", phone: "p" }, via: "signup" });
+	assert.equal(users.taken("nopw@example.com"), false, "an operator's account without a password is nothing");
+	const at = new Date(Date.UTC(2026, 9, 6, 10, 0, 0));
+	assert.deepEqual(users.pass("Ana@Example.com", { phone: PHONE, texted: true }, at), { name: "ana@example.com", made: true });
+	let raw = readUsers(dir);
+	assert.equal(raw["dana@example.com"].custom, 42, "another record's fields are kept");
+	assert.deepEqual({ ...raw["ana@example.com"] }, {
+		created: "2026-10-06T10:00:00+00:00", role: "member", via: "check", phone: PHONE, phones: [PHONE],
+		verified: { email: "2026-10-06T10:00:00+00:00", phone: "2026-10-06T10:00:00+00:00" }, seen: "2026-10-06T10:00:00+00:00",
+	}, "no password");
 	assert.equal(statSync(path).mode & 0o777, 0o600);
-	assert.ok(users.has("ana@example.com") && users.role("ana@example.com") === "member" && users.phoneOwner("+40712345678") === "ana@example.com");
-	assert.ok(users.verify("ana@example.com", "a long password"));
-	assert.throws(() => users.create("ANA@example.com", { hash: "scrypt$x", role: "member" }), (e: any) => e instanceof ResumesError && e.code === "ACCOUNT_EXISTS");
-	assert.throws(() => users.create("bob@example.com", { hash: "scrypt$x", role: "member", phone: "+40712345678" }), (e: any) => e.code === "PHONE_TAKEN");
-	assert.throws(() => users.create("dana@example.com", { hash: "scrypt$x", role: "member" }), (e: any) => e.code === "ACCOUNT_EXISTS", "an operator's account is never replaced");
-	assert.ok(!existsSync(join(dir, "users.lock")), "the lock is released");
+	assert.ok(users.has("ana@example.com") && users.role("ana@example.com") === "member" && users.knownPhone(PHONE));
+	assert.ok(!users.verify("ana@example.com", ""), "no password: the login route lets nobody in by it");
+
+	// the second time, with another number that needed no text: the record follows, the first number stays known
+	const later = new Date(Date.UTC(2026, 9, 7, 10, 0, 0));
+	assert.deepEqual(users.pass("ana@example.com", { phone: "+40712345679", texted: false }, later), { name: "ana@example.com", made: false });
+	raw = readUsers(dir);
+	assert.equal(raw["ana@example.com"].phone, "+40712345679");
+	assert.deepEqual(raw["ana@example.com"].phones, [PHONE, "+40712345679"]);
+	assert.deepEqual(raw["ana@example.com"].verified, { email: "2026-10-07T10:00:00+00:00", phone: "2026-10-06T10:00:00+00:00" }, "the phone's date is the text's");
+	assert.ok(users.knownPhone(PHONE) && users.knownPhone("+40712345679"));
+	users.pass("bob@example.com", { phone: "+40712345679", texted: false }, later);
+	assert.deepEqual(users.sharing("ana@example.com").sort(), ["ana@example.com", "bob@example.com"], "one number, one allowance");
+	assert.deepEqual(users.sharing("dana@example.com"), ["dana@example.com"]);
+
+	// an operator's address: role, password and numbers as they were
+	users.pass("dana@example.com", { phone: "+4915123456789", texted: false }, later);
+	raw = readUsers(dir);
+	assert.ok(users.verify("dana@example.com", "cretzuel") && users.role("dana@example.com") === "admin");
+	assert.equal(raw["dana@example.com"].phone, undefined, "an operator's number is not recorded: it was never texted");
+	assert.ok(!users.knownPhone("+4915123456789"));
 
 	// what `resumes users block` does to the file
 	const auth = new Auth(dir);
 	const token = auth.token("ana@example.com");
 	assert.equal(auth.read(token), "ana@example.com");
-	const r2 = JSON.parse(readFileSync(path, "utf-8"));
-	r2.users["ana@example.com"].role = "blocked";
-	writeFileSync(path, JSON.stringify(r2));
-	assert.equal(auth.read(token), null, "a blocked account's cookie is refused at once");
-	assert.ok(!users.verify("ana@example.com", "a long password"), "and its password");
-	assert.ok(!users.has("ana@example.com") && users.taken("ana@example.com") && users.phoneOwner("+40712345678") === "ana@example.com");
-	assert.equal(users.count(), 2, "login stays on with only a blocked account and an admin");
+	raw["ana@example.com"].role = "blocked";
+	writeFileSync(path, JSON.stringify({ users: raw }));
+	assert.equal(auth.read(token), null, "a blocked person's cookie is refused at once");
+	assert.ok(!users.has("ana@example.com") && users.taken("ana@example.com"));
+	assert.ok(users.blockedPhone(PHONE) && users.blockedPhone("+40712345679"), "every number the blocked person came with");
+	assert.ok(!users.knownPhone("+40712345679"), "… even one someone else came with too");
+	assert.throws(() => users.pass("ana@example.com", { phone: "+40712345600", texted: true }), (e: any) => e instanceof ResumesError && e.code === "BLOCKED");
+	assert.ok(!existsSync(join(dir, "users.lock")), "the lock is released");
+	assert.equal(users.count(), 3, "login stays on");
 });
 
 test("the lock is shared with `resumes users` (Python): each waits for the other, nothing is lost", { skip: !existsSync(PYTHON) && "no .venv" }, async () => {
@@ -102,10 +136,10 @@ with users.locked(Path(${JSON.stringify(path)})):
 `], { cwd: ROOT, stdio: ["ignore", "pipe", "inherit"] });
 	await new Promise<void>((ok) => holder.stdout!.once("data", () => ok()));
 	const t0 = Date.now();
-	users.create("ana@example.com", { hash: hashPassword("a long password"), role: "member", phone: "+40712345678" });
+	users.pass("ana@example.com", { phone: PHONE, texted: true });
 	assert.ok(Date.now() - t0 >= 400, `waited for Python's lock (${Date.now() - t0} ms)`);
 	await new Promise((ok) => holder.on("exit", ok));
-	// Python rewrites the file: fields it does not know must survive
+	// Python rewrites the file: a member without a password, and fields it does not know, must survive
 	const py = spawnSync(PYTHON, ["-c", `
 from pathlib import Path
 from agentic_search.web import users
@@ -114,90 +148,119 @@ print(sorted(users.load(Path(${JSON.stringify(path)}))))
 `], { cwd: ROOT, encoding: "utf-8" });
 	assert.equal(py.status, 0, py.stderr);
 	assert.equal(py.stdout.trim(), "['ana@example.com', 'dana@example.com']");
-	const raw = JSON.parse(readFileSync(path, "utf-8")).users;
-	assert.equal(raw["ana@example.com"].phone, "+40712345678", "Python's rewrite kept the member's phone");
-	assert.equal(users.role("dana@example.com"), "admin");
+	const raw = readUsers(dir);
+	assert.deepEqual(raw["ana@example.com"].phones, [PHONE], "Python's rewrite kept the member, numbers and all");
+	assert.ok(users.knownPhone(PHONE) && users.role("dana@example.com") === "admin");
 	assert.throws(() => withLock(join(dir, "users.lock"), () => withLock(join(dir, "users.lock"), () => 1, 100)), (e: any) => e.code === "BUSY", "a lock held past the wait: refused");
 });
 
-test("the whole flow: email code → phone code → password → a member, the flow used up, the ledger written", async () => {
+test("the first time: the form, the email's code, a text to the new number, its code → in; the flow used up, the ledger written", async () => {
 	const r = rig();
-	const { id, view } = await r.s.start(null, "  Ana@Example.COM ", IP, SITE);
-	assert.equal(view.step, "email_code");
-	assert.equal(view.email, "ana@example.com");
-	assert.equal(view.resend_in, 60);
-	assert.equal(view.sends_left, 2);
-	assert.equal(r.dry!.sent.length, 1);
+	const { id, view } = await r.s.start(null, { email: "  Ana@Example.COM ", phone: "0040 712 345 678" }, IP);
+	assert.deepEqual({ ...view, expires_in: 0 }, { step: "email_code", email: "ana@example.com", phone: "+40 712 345 678", expires_in: 0, resend_in: 60, sends_left: 2 });
+	assert.equal(r.dry!.sent.length, 1, "only the email: nothing goes to the number before the address is proved");
 	const mail = r.dry!.sent[0];
 	assert.match(mail.subject!, /^\d{6} is your Semantic search code$/);
 	assert.ok(!/https?:/.test(mail.text), "no link in the code email");
+	assert.ok(!/account|sign.?up|log ?in/i.test(mail.text + mail.html), "no word of an account");
 	const flows = readFileSync(join(r.dir, "signups.json"), "utf-8");
 	assert.ok(!flows.includes(r.lastCode("email")), "the code is not in the file, only its HMAC");
 	assert.equal(statSync(join(r.dir, "signups.json")).mode & 0o777, 0o600);
 
-	assert.equal(r.s.verifyEmail(id, r.lastCode("email")).step, "phone");
-	assert.equal(r.s.verifyEmail(id, "000000").step, "phone", "a double submit after success: no error");
-	const v = await r.s.phone(id, "0040 712 345 678", IP, SITE);
+	const v = (await r.s.verifyEmail(id, r.lastCode("email"), IP, SITE)) as View;
 	assert.equal(v.step, "phone_code");
 	assert.equal(v.phone, "+40 712 345 678");
+	assert.equal(((await r.s.verifyEmail(id, "000000", IP, SITE)) as View).step, "phone_code", "a double submit after success: no error, no second text");
+	assert.equal(smsCount(r), 1);
 	const sms = r.dry!.sent.at(-1)!;
-	assert.equal(sms.to, "+40712345678");
+	assert.equal(sms.to, PHONE);
 	assert.match(sms.text, /^\d{6} is your Semantic search code\.\n\n@search\.example\.test #\d{6}$/, "the origin-bound line phones fill in from");
-	assert.equal(r.s.verifyPhone(id, r.lastCode("sms")).step, "password");
-	await rejects(() => r.s.finish(id, "short", IP), "WEAK_PASSWORD");
-	await rejects(() => r.s.finish(id, "ANA@example.com", IP), "WEAK_PASSWORD", "the email as password");
-	assert.equal(r.s.finish(id, "a long password", IP), "ana@example.com");
+	assert.deepEqual(r.s.verifyPhone(id, r.lastCode("sms"), IP), { done: true, user: "ana@example.com" });
 	assert.equal(r.users.role("ana@example.com"), "member");
-	assert.equal(r.users.phoneOwner("+40712345678"), "ana@example.com");
-	assert.ok(r.users.verify("ana@example.com", "a long password"));
+	assert.ok(r.users.knownPhone(PHONE));
 	assert.equal(r.s.flow(id), null, "the flow is used up");
-	await rejects(() => r.s.finish(id, "a long password", IP), "SIGNUP_EXPIRED", "a replay of the last step");
+	await rejects(() => r.s.verifyPhone(id, r.lastCode("sms"), IP), "SIGNUP_EXPIRED", "a replay of the last step");
 	const ledger = readFileSync(join(r.dir, "signup-log.jsonl"), "utf-8").trim().split("\n").map((l) => JSON.parse(l));
-	assert.deepEqual(ledger.map((l) => l.kind), ["flow", "email", "sms", "account"]);
-	assert.ok(ledger.every((l) => l.ip === IP) && ledger[1].ok === true && ledger[2].to === "+40712345678");
+	assert.deepEqual(ledger.map((l) => l.kind), ["flow", "email", "sms", "passed"]);
+	assert.ok(ledger.every((l) => l.ip === IP) && ledger[1].ok === true && ledger[2].to === PHONE);
+	assert.deepEqual([ledger[3].to, ledger[3].phone, ledger[3].texted, ledger[3].made], ["ana@example.com", PHONE, true, true]);
 	assert.ok(!JSON.stringify(ledger).includes(r.lastCode("sms")), "no code in the ledger");
 });
 
-test("no step before its turn: the server's flow says what is verified, never the request", async () => {
+test("the next time: a number that came through before needs no text, whatever the address; an operator's address needs none; a new number does", async () => {
 	const r = rig();
-	await rejects(() => r.s.finish("no-such-flow", "a long password", IP), "SIGNUP_EXPIRED");
-	const { id } = await r.s.start(null, "ana@example.com", IP, SITE);
-	await rejects(() => r.s.finish(id, "a long password", IP), "OUT_OF_ORDER", "the password before anything");
-	await rejects(r.s.phone(id, "+40712345678", IP, SITE), "OUT_OF_ORDER", "a phone before the email");
-	await rejects(() => r.s.verifyPhone(id, "123456"), "OUT_OF_ORDER", "a phone code before the email");
-	r.s.verifyEmail(id, r.lastCode("email"));
-	await rejects(() => r.s.verifyPhone(id, "123456"), "OUT_OF_ORDER", "a phone code before a phone");
-	await rejects(() => r.s.finish(id, "a long password", IP), "OUT_OF_ORDER", "the password before the phone");
-	await rejects(r.s.resend(id, IP, SITE), "OUT_OF_ORDER", "a resend at the phone step before a phone");
-	assert.equal(r.users.count(), 0, "no account");
+	await firstTime(r);
+	r.later(3600);
+	let { out } = await throughEmail(r, "ana@example.com", "+40 712 345 678");
+	assert.deepEqual(out, { done: true, user: "ana@example.com" }, "the email's code alone");
+	r.later(3600);
+	({ out } = await throughEmail(r, "ana.popescu@example.com", PHONE));
+	assert.deepEqual(out, { done: true, user: "ana.popescu@example.com" }, "another address with a known number: in too");
+	assert.equal(smsCount(r), 1, "one text in all");
+	assert.deepEqual(r.users.sharing("ana@example.com").sort(), ["ana.popescu@example.com", "ana@example.com"]);
+	const passed = readFileSync(join(r.dir, "signup-log.jsonl"), "utf-8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => l.kind === "passed");
+	assert.deepEqual(passed.map((l) => [l.texted, l.made]), [[true, true], [false, false], [false, true]]);
+
+	// an operator's address: no text, the number not recorded
+	const raw = readUsers(r.dir);
+	raw["dana@example.com"] = { hash: hashPassword("cretzuel"), created: "2026-09-30T18:00:00+00:00" };
+	writeFileSync(join(r.dir, "users.json"), JSON.stringify({ users: raw }));
+	r.later(61);
+	({ out } = await throughEmail(r, "dana@example.com", "+49 151 23456789", "198.51.100.4"));
+	assert.deepEqual(out, { done: true, user: "dana@example.com" });
+	assert.equal(smsCount(r), 1);
+	assert.ok(!r.users.knownPhone("+4915123456789") && r.users.role("dana@example.com") === "admin");
+
+	// a known address with a new number: the text again
+	r.later(61);
+	const { id, out: o } = await throughEmail(r, "ana@example.com", "+40712345679");
+	assert.equal((o as View).step, "phone_code");
+	assert.deepEqual(r.s.verifyPhone(id, r.lastCode("sms"), IP), { done: true, user: "ana@example.com" });
+	assert.deepEqual(readUsers(r.dir)["ana@example.com"].phones, [PHONE, "+40712345679"]);
+});
+
+test("no step before its turn: the server's flow says what is proved, never the request", async () => {
+	const r = rig();
+	await rejects(() => r.s.verifyPhone("no-such-flow", "123456", IP), "SIGNUP_EXPIRED");
+	const { id } = await r.s.start(null, { email: "ana@example.com", phone: PHONE }, IP);
+	await rejects(r.s.phone(id, "+40712345679", IP, SITE), "OUT_OF_ORDER", "a number before the email's code");
+	await rejects(() => r.s.verifyPhone(id, "123456", IP), "OUT_OF_ORDER", "a text's code before the email's");
+	await rejects(() => r.s.changePhone(id), "OUT_OF_ORDER");
+	await r.s.verifyEmail(id, r.lastCode("email"), IP, SITE);
+	assert.equal(r.s.changePhone(id).step, "phone");
+	await rejects(() => r.s.verifyPhone(id, r.lastCode("sms"), IP), "OUT_OF_ORDER", "the code of a number given up");
+	await rejects(r.s.resend(id, IP, SITE), "OUT_OF_ORDER", "a resend with no number");
+	assert.equal(r.users.count(), 0, "nobody passed");
 });
 
 test("codes: 5 wrong tries burn it, only the newest counts, it expires, it is used once", async () => {
 	const r = rig();
-	const { id } = await r.s.start(null, "ana@example.com", IP, SITE);
+	const { id } = await r.s.start(null, { email: "ana@example.com", phone: PHONE }, IP);
 	const right = r.lastCode("email");
 	const wrong = right === "000000" ? "111111" : "000000";
-	await rejects(() => r.s.verifyEmail(id, "12345"), "BAD_CODE", "not 6 digits: not a try");
+	const verify = (code: string) => () => r.s.verifyEmail(id, code, IP, SITE);
+	await rejects(verify("12345"), "BAD_CODE", "not 6 digits: not a try");
 	for (let i = 4; i >= 1; i--) {
-		const e = await rejects(() => r.s.verifyEmail(id, wrong), "WRONG_CODE");
+		const e = await rejects(verify(wrong), "WRONG_CODE");
 		assert.equal(e.extra.tries_left, i);
 	}
-	await rejects(() => r.s.verifyEmail(id, wrong), "TOO_MANY_TRIES", "the 5th");
-	await rejects(() => r.s.verifyEmail(id, right), "TOO_MANY_TRIES", "burned: even the right code");
+	await rejects(verify(wrong), "TOO_MANY_TRIES", "the 5th");
+	await rejects(verify(right), "TOO_MANY_TRIES", "burned: even the right code");
 	r.later(61);
 	await r.s.resend(id, IP, SITE);
 	const fresh = r.lastCode("email");
-	if (fresh !== right) await rejects(() => r.s.verifyEmail(id, right), "WRONG_CODE", "the older code no longer counts");
+	if (fresh !== right) await rejects(verify(right), "WRONG_CODE", "the older code no longer counts");
 	r.later(601);
-	await rejects(() => r.s.verifyEmail(id, fresh), "CODE_EXPIRED", "10 minutes later");
+	await rejects(verify(fresh), "CODE_EXPIRED", "10 minutes later");
 	r.later(61);
 	await r.s.resend(id, IP, SITE);
-	assert.equal(r.s.verifyEmail(id, ` ${r.lastCode("email").slice(0, 3)} ${r.lastCode("email").slice(3)} `).step, "phone", "spaces in a pasted code are fine");
+	const c = r.lastCode("email");
+	assert.equal(((await verify(` ${c.slice(0, 3)} ${c.slice(3)} `)()) as View).step, "phone_code", "spaces in a pasted code are fine");
 });
 
 test("the floor and the per-step count: 60 s between codes, 3 codes a step, changing the number buys nothing", async () => {
 	const r = rig();
-	const { id } = await r.s.start(null, "ana@example.com", IP, SITE);
+	const { id } = await r.s.start(null, { email: "ana@example.com", phone: PHONE }, IP);
 	let e = await rejects(r.s.resend(id, IP, SITE), "WAIT");
 	assert.equal(e.extra.retry_in, 60);
 	r.later(30);
@@ -211,128 +274,111 @@ test("the floor and the per-step count: 60 s between codes, 3 codes a step, chan
 	assert.equal(r.s.view(r.s.flow(id)).sends_left, 0);
 	r.later(61);
 	await rejects(r.s.resend(id, IP, SITE), "LIMIT", "a 4th email code in one flow");
-	r.s.verifyEmail(id, r.lastCode("email"));
 
-	await r.s.phone(id, "+40712345678", IP, SITE);
-	await rejects(r.s.phone(id, "+40712345679", IP, SITE), "WAIT", "another number within 60 s");
+	await r.s.verifyEmail(id, r.lastCode("email"), IP, SITE); // the first text
+	assert.equal(r.s.changePhone(id).step, "phone");
+	e = await rejects(r.s.phone(id, "+40712345679", IP, SITE), "WAIT", "another number within 60 s");
+	assert.equal((e.extra.view as View).step, "phone", "the page is told where the flow stands");
 	r.later(61);
 	await r.s.phone(id, "+40712345679", IP, SITE);
 	r.later(61);
 	assert.equal(r.s.changePhone(id).step, "phone");
 	await r.s.phone(id, "+40712345670", IP, SITE);
 	r.later(61);
-	await rejects(r.s.phone(id, "+40712345671", IP, SITE), "LIMIT", "a 4th SMS in one flow, whatever the number");
-	assert.equal(r.dry!.sent.filter((m) => m.kind === "sms").length, 3);
+	await rejects(r.s.phone(id, "+40712345671", IP, SITE), "LIMIT", "a 4th text in one flow, whatever the number");
+	assert.equal(smsCount(r), 3);
 });
 
 test("limits across flows: per address, per IP, the server's daily budget; a restart keeps them", async () => {
 	const r = rig({ policy: { emails_per_day: 8 } });
+	const form = (email: string) => ({ email, phone: PHONE });
 	for (let i = 0; i < 5; i++) {
-		await r.s.start(null, "ana@example.com", `198.51.100.${i}`, SITE);
+		await r.s.start(null, form("ana@example.com"), `198.51.100.${i}`);
 		r.later(61);
 	}
-	let e = await rejects(r.s.start(null, "ana@example.com", "198.51.100.99", SITE), "LIMIT", "a 6th code email to one address in a day");
+	let e = await rejects(r.s.start(null, form("ana@example.com"), "198.51.100.99"), "LIMIT", "a 6th code email to one address in a day");
 	assert.match(e.message, /this address/);
 	assert.ok(Number(e.extra.retry_in) > 23 * 3600, "back in about a day");
 
 	// on a restart the counts are rebuilt from the ledger
 	const again = rig({ dir: r.dir, t: r.clock, policy: { emails_per_day: 8 } });
-	await rejects(again.s.start(null, "ana@example.com", "198.51.100.98", SITE), "LIMIT", "after a restart too");
-	await again.s.start(null, "bob@example.com", "198.51.100.1", SITE);
-	await again.s.start(null, "cid@example.com", "198.51.100.1", SITE);
-	await again.s.start(null, "dan@example.com", "198.51.100.1", SITE);
-	e = await rejects(again.s.start(null, "eve@example.com", "198.51.100.1", SITE), "PAUSED", "the server's 8 emails a day");
-	assert.match(e.message, /paused for today/);
+	await rejects(again.s.start(null, form("ana@example.com"), "198.51.100.98"), "LIMIT", "after a restart too");
+	await again.s.start(null, form("bob@example.com"), "198.51.100.1");
+	await again.s.start(null, form("cid@example.com"), "198.51.100.1");
+	await again.s.start(null, form("dan@example.com"), "198.51.100.1");
+	e = await rejects(again.s.start(null, form("eve@example.com"), "198.51.100.1"), "PAUSED", "the server's 8 emails a day");
+	assert.match(e.message, /any more codes today/);
 	again.later(24 * 3600 + 1);
-	await again.s.start(null, "eve@example.com", "198.51.100.1", SITE);
+	await again.s.start(null, form("eve@example.com"), "198.51.100.1");
 
 	// per IP: 10 new flows an hour, 10 emails a day
 	const p = rig();
-	for (let i = 0; i < 10; i++) await p.s.start(null, `u${i}@example.com`, IP, SITE);
-	e = await rejects(p.s.start(null, "u10@example.com", IP, SITE), "LIMIT", "an 11th flow from one address within the hour");
+	for (let i = 0; i < 10; i++) await p.s.start(null, form(`u${i}@example.com`), IP);
+	e = await rejects(p.s.start(null, form("u10@example.com"), IP), "LIMIT", "an 11th flow from one address within the hour");
 	assert.match(e.message, /network in the last hour/);
 	p.later(3601);
-	e = await rejects(p.s.start(null, "u11@example.com", IP, SITE), "LIMIT", "an 11th email from one address within the day");
+	e = await rejects(p.s.start(null, form("u11@example.com"), IP), "LIMIT", "an 11th email from one address within the day");
 	assert.match(e.message, /from your network today/);
-	await p.s.start(null, "u12@example.com", "2001:db8:1:2::99", SITE);
+	await p.s.start(null, form("u12@example.com"), "2001:db8:1:2::99");
 });
 
-test("SMS limits: per number, per IP, the server's budget, the allowlist, a taken number", async () => {
+test("texts: the number read at the form, then per number, per IP and the server's budget once the address is proved", async () => {
 	const r = rig({ policy: { sms_per_day: 5 } });
-	const flows: string[] = [];
-	for (let i = 0; i < 4; i++) {
-		flows.push(await verifiedEmail(r, `p${i}@example.com`, `198.51.100.${i}`));
-		r.later(1);
+	for (const [bad, code] of [["+1 876 555 1234", "PHONE_COUNTRY"], ["+11720555012", "BAD_PHONE"], ["0712 345 678", "BAD_PHONE"], ["+40 712 345 678; DROP", "BAD_PHONE"], ["", "BAD_PHONE"]]) {
+		await rejects(r.s.start(null, { email: "p@example.com", phone: bad }, IP), code, `${bad}: refused at the form`);
 	}
-	await r.s.phone(flows[0], "+40712345678", "198.51.100.0", SITE);
-	await r.s.phone(flows[1], "+40712345678", "198.51.100.1", SITE);
-	await r.s.phone(flows[2], "+40712345678", "198.51.100.2", SITE);
-	let e = await rejects(r.s.phone(flows[3], "+40712345678", "198.51.100.3", SITE), "LIMIT", "a 4th SMS to one number in a day, across flows");
+	assert.equal(r.dry!.sent.length, 0, "nothing sent for a number refused at the form");
+	const e0 = await rejects(r.s.start(null, { email: "p@example.com", phone: "+1 876 555 1234" }, IP), "PHONE_COUNTRY");
+	assert.equal(e0.message, "We can't send text messages to numbers in this country (JM).", "Jamaica is +1 but not the US");
+	for (let i = 0; i < 3; i++) await throughEmail(r, `p${i}@example.com`, PHONE, `198.51.100.${i}`);
+	let e = await rejects(throughEmail(r, "p3@example.com", PHONE, "198.51.100.3"), "LIMIT", "a 4th text to one number in a day, across flows");
 	assert.match(e.message, /this number/);
-	await rejects(r.s.phone(flows[3], "+1 876 555 1234", IP, SITE), "PHONE_COUNTRY", "Jamaica is +1 but not the US");
-	await rejects(r.s.phone(flows[3], "+11720555012", IP, SITE), "BAD_PHONE", "a doubled +1 (+1 1720…) is not a US number");
-	await rejects(r.s.phone(flows[3], "0712 345 678", IP, SITE), "BAD_PHONE", "no country code");
-	await rejects(r.s.phone(flows[3], "+40 712 345 678; DROP", IP, SITE), "BAD_PHONE");
-	await r.s.phone(flows[3], "+1 202 555 0123", "198.51.100.3", SITE);
-	const f5 = await verifiedEmail(r, "p5@example.com", "198.51.100.5");
-	await r.s.phone(f5, "+49 151 23456789", "198.51.100.5", SITE);
-	const f6 = await verifiedEmail(r, "p6@example.com", "198.51.100.6");
-	e = await rejects(r.s.phone(f6, "+33 6 12 34 56 78", "198.51.100.6", SITE), "PAUSED", "the server's 5 SMS a day: the 6th refused");
+	assert.equal((e.extra.view as View).step, "phone", "the address stays proved: another number may follow");
+	await throughEmail(r, "p4@example.com", "+1 202 555 0123", "198.51.100.4");
+	await throughEmail(r, "p5@example.com", "+49 151 23456789", "198.51.100.5");
+	e = await rejects(throughEmail(r, "p6@example.com", "+33 6 12 34 56 78", "198.51.100.6"), "PAUSED", "the server's 5 texts a day: the 6th refused");
+	assert.match(e.message, /any more text messages today/);
 
-	// per IP: 5 SMS a day
+	// per IP: 5 texts a day
 	const q = rig();
-	for (let i = 0; i < 5; i++) {
-		const f = await verifiedEmail(q, `q${i}@example.com`);
-		await q.s.phone(f, `+4071234560${i}`, IP, SITE);
-	}
-	const f = await verifiedEmail(q, "q9@example.com");
-	e = await rejects(q.s.phone(f, "+40712345609", IP, SITE), "LIMIT");
+	for (let i = 0; i < 5; i++) await throughEmail(q, `q${i}@example.com`, `+4071234560${i}`);
+	e = await rejects(throughEmail(q, "q9@example.com", "+40712345609"), "LIMIT");
 	assert.match(e.message, /from your network today/);
-
-	const t = rig();
-	t.users.create("old@example.com", { hash: hashPassword("a long password"), role: "member", phone: "+40712345678" });
-	const tf = await verifiedEmail(t, "new@example.com");
-	await rejects(t.s.phone(tf, "+40 712 345 678", IP, SITE), "PHONE_TAKEN");
-	assert.equal(t.dry!.sent.filter((m) => m.kind === "sms").length, 0, "no SMS to a taken number");
 });
 
-test("an address that has an account: the same answer, a 'you already have one' email, no code, no account replaced", async () => {
+test("blocked: an address gets no code (the same answer), a person's numbers are refused once an address is proved", async () => {
 	const r = rig();
-	r.users.create("ana@example.com", { hash: hashPassword("the owner's password"), role: "member", phone: "+40712345678" });
-	const fresh = await r.s.start(null, "new@example.com", IP, SITE);
-	const known = await r.s.start(null, "ANA@example.com", IP, SITE);
-	const strip = (v: Record<string, unknown>) => ({ ...v, email: "" });
-	assert.deepEqual(strip(known.view as any), strip(fresh.view as any), "nothing to learn from the answer");
-	const mail = r.dry!.sent.at(-1)!;
-	assert.equal(mail.subject, "You already have a Semantic search account");
-	assert.match(mail.text, /Log in at https:\/\/search\.example\.test/);
-	assert.ok(!/\b\d{6}\b/.test(mail.text), "no code in it");
-	for (const guess of ["000000", "123456", "999999", "424242"]) await rejects(() => r.s.verifyEmail(known.id, guess), "WRONG_CODE");
-	await rejects(() => r.s.verifyEmail(known.id, "111111"), "TOO_MANY_TRIES");
-	assert.ok(r.users.verify("ana@example.com", "the owner's password"), "the owner's password is untouched");
-
-	const raw = JSON.parse(readFileSync(join(r.dir, "users.json"), "utf-8"));
-	raw.users["ana@example.com"].role = "blocked";
-	writeFileSync(join(r.dir, "users.json"), JSON.stringify(raw));
+	writeFileSync(join(r.dir, "users.json"), JSON.stringify({ users: { "ana@example.com": { role: "blocked", phone: PHONE, phones: [PHONE, "+40712345677"] } } }));
+	const fresh = await r.s.start(null, { email: "new@example.com", phone: "+40712345600" }, IP);
 	const before = r.dry!.sent.length;
-	const blocked = await r.s.start(null, "ana@example.com", "198.51.100.7", SITE);
-	assert.deepEqual(strip(blocked.view as any), strip(fresh.view as any));
+	const blocked = await r.s.start(null, { email: "ANA@example.com", phone: "+40712345600" }, "198.51.100.7");
+	const strip = (v: View) => ({ ...v, email: "" });
+	assert.deepEqual(strip(blocked.view), strip(fresh.view), "nothing to learn from the answer");
 	assert.equal(r.dry!.sent.length, before, "nothing sent to a blocked address");
+	for (const guess of ["000000", "123456", "999999", "424242"]) await rejects(() => r.s.verifyEmail(blocked.id, guess, IP, SITE), "WRONG_CODE");
+
+	r.later(61);
+	const { id } = await r.s.start(null, { email: "eve@example.com", phone: PHONE }, "198.51.100.8");
+	const e = await rejects(r.s.verifyEmail(id, r.lastCode("email"), "198.51.100.8", SITE), "PHONE_BLOCKED", "the blocked person's number, with another address");
+	assert.equal(e.status, 403);
+	assert.equal((e.extra.view as View).step, "phone");
+	await rejects(r.s.phone(id, "+40712345677", "198.51.100.8", SITE), "PHONE_BLOCKED", "their other number too");
+	assert.equal(smsCount(r), 0, "no text to a blocked number");
+	assert.equal(((await r.s.phone(id, "+40712345601", "198.51.100.8", SITE)) as View).step, "phone_code", "another number goes on");
 });
 
-test("two flows for one new address: the first to finish gets the account, the second ACCOUNT_EXISTS", async () => {
+test("one address in two flows at once: both pass, the record keeps both numbers; the last code is good once", async () => {
 	const r = rig();
-	const a = await verifiedEmail(r, "ana@example.com", "198.51.100.1");
+	const a = (await throughEmail(r, "ana@example.com", PHONE, "198.51.100.1")).id;
 	r.later(61);
-	const b = await verifiedEmail(r, "ana@example.com", "198.51.100.2");
-	await r.s.phone(a, "+40712345678", "198.51.100.1", SITE);
-	r.s.verifyPhone(a, r.lastCode("sms"));
-	await r.s.phone(b, "+40712345679", "198.51.100.2", SITE);
-	r.s.verifyPhone(b, r.lastCode("sms"));
-	assert.equal(r.s.finish(a, "first password!", IP), "ana@example.com");
-	await rejects(() => r.s.finish(b, "second password", IP), "ACCOUNT_EXISTS");
-	assert.ok(r.users.verify("ana@example.com", "first password!") && !r.users.verify("ana@example.com", "second password"));
-	assert.equal(r.s.flow(b), null, "the losing flow is gone too");
+	const b = (await throughEmail(r, "ana@example.com", "+40712345679", "198.51.100.2")).id;
+	const codeB = r.lastCode("sms");
+	const codeA = /\b(\d{6})\b/.exec(r.dry!.sent.filter((m) => m.kind === "sms")[0].text)![1];
+	assert.deepEqual(r.s.verifyPhone(a, codeA, IP), { done: true, user: "ana@example.com" });
+	await rejects(() => r.s.verifyPhone(a, codeA, IP), "SIGNUP_EXPIRED", "a double submit of the last code");
+	assert.deepEqual(r.s.verifyPhone(b, codeB, IP), { done: true, user: "ana@example.com" });
+	assert.deepEqual(readUsers(r.dir)["ana@example.com"].phones, [PHONE, "+40712345679"]);
+	assert.equal(r.users.count(), 1);
 });
 
 test("a provider failing: SEND_FAILED, still counted (no resend loop), the ledger says so; an undeliverable number goes back a step", async () => {
@@ -353,73 +399,77 @@ test("a provider failing: SEND_FAILED, still counted (no resend loop), the ledge
 		},
 	};
 	const r = rig({ senders: flaky });
-	const start = r.s.start(null, "ana@example.com", IP, SITE);
-	const e = await rejects(start, "SEND_FAILED");
+	const e = await rejects(r.s.start(null, { email: "ana@example.com", phone: PHONE }, IP), "SEND_FAILED");
 	assert.match(e.message, /could not be sent/);
 	const ledger = () => readFileSync(join(r.dir, "signup-log.jsonl"), "utf-8").trim().split("\n").map((l) => JSON.parse(l));
 	assert.equal(ledger().at(-1).ok, false);
 	assert.match(ledger().at(-1).error, /down/);
 	// a failed send still counts; a retry is a new start
 	fail = false;
-	const ok = await r.s.start(null, "ana@example.com", IP, SITE);
+	const ok = await r.s.start(null, { email: "ana@example.com", phone: PHONE }, IP);
 	await rejects(r.s.resend(ok.id, IP, SITE), "WAIT", "the floor holds after a send");
 	const code = /\b(\d{6})\b/.exec(sent.at(-1)!)![1];
-	r.s.verifyEmail(ok.id, code);
 	invalid = true;
-	const u = await rejects(r.s.phone(ok.id, "+40712345678", IP, SITE), "UNDELIVERABLE");
+	const u = await rejects(r.s.verifyEmail(ok.id, code, IP, SITE), "UNDELIVERABLE");
 	assert.match(u.message, /can't receive text messages/);
-	assert.equal(r.s.view(r.s.flow(ok.id)).step, "phone", "back to the number");
+	assert.equal((u.extra.view as View).step, "phone", "back to the number");
+	assert.equal(r.s.view(r.s.flow(ok.id)).step, "phone");
 	assert.equal(ledger().at(-1).error, "undeliverable");
 	invalid = false;
 	fail = true;
 	r.later(61);
-	await rejects(r.s.phone(ok.id, "+40712345679", IP, SITE), "SEND_FAILED");
-	assert.equal(r.s.view(r.s.flow(ok.id)).step, "phone_code", "a code may have gone: resend or change the number");
+	const f = await rejects(r.s.phone(ok.id, "+40712345679", IP, SITE), "SEND_FAILED");
+	assert.equal((f.extra.view as View).step, "phone_code", "a code may have gone: resend or change the number");
 	await rejects(r.s.resend(ok.id, IP, SITE), "WAIT");
 });
 
-test("a restart in the middle: the flow, its tries and its code survive (signups.json)", async () => {
+test("a restart in the middle: the flow, its tries and its code survive (signups.json); the old sign-up's flows do not", async () => {
 	const r = rig();
-	const { id } = await r.s.start(null, "ana@example.com", IP, SITE);
+	const { id } = await r.s.start(null, { email: "ana@example.com", phone: PHONE }, IP);
 	const code = r.lastCode("email");
 	const wrong = code === "000000" ? "111111" : "000000";
-	await rejects(() => r.s.verifyEmail(id, wrong), "WRONG_CODE");
-	await rejects(() => r.s.verifyEmail(id, wrong), "WRONG_CODE");
-	await rejects(() => r.s.verifyEmail(id, wrong), "WRONG_CODE");
+	for (let i = 0; i < 3; i++) await rejects(r.s.verifyEmail(id, wrong, IP, SITE), "WRONG_CODE");
 	const after = rig({ dir: r.dir, t: r.clock });
-	const e = await rejects(() => after.s.verifyEmail(id, wrong), "WRONG_CODE");
+	const e = await rejects(after.s.verifyEmail(id, wrong, IP, SITE), "WRONG_CODE");
 	assert.equal(e.extra.tries_left, 1, "the tries were kept: a restart is no reset");
-	assert.equal(after.s.verifyEmail(id, code).step, "phone");
+	assert.equal(((await after.s.verifyEmail(id, code, IP, SITE)) as View).step, "phone_code");
 	// a flow expires after 30 minutes
 	after.later(1801);
 	assert.equal(after.s.flow(id), null);
-	assert.deepEqual(after.s.view(null, true), { step: "email", expired: true, work_email: true });
-	await rejects(r.s.phone(id, "+40712345678", IP, SITE), "SIGNUP_EXPIRED");
+	assert.deepEqual(after.s.view(null, true), { step: "details", expired: true, work_email: true });
+	await rejects(r.s.phone(id, PHONE, IP, SITE), "SIGNUP_EXPIRED");
 	const third = rig({ dir: r.dir, t: r.clock });
 	assert.equal(third.s.flow(id), null, "and is not read back after a restart either");
 	// expired flows are dropped from the file at the next save
 	const four = rig();
 	const ids: string[] = [];
-	for (let i = 0; i < 4; i++) ids.push((await four.s.start(null, `gone${i}@example.com`, `198.51.100.${i}`, SITE)).id);
+	for (let i = 0; i < 4; i++) ids.push((await four.s.start(null, { email: `gone${i}@example.com`, phone: PHONE }, `198.51.100.${i}`)).id);
 	four.later(1801);
-	await four.s.start(null, "fresh@example.com", "198.51.100.9", SITE);
+	await four.s.start(null, { email: "fresh@example.com", phone: PHONE }, "198.51.100.9");
 	const kept = Object.keys(JSON.parse(readFileSync(join(four.dir, "signups.json"), "utf-8")).flows);
 	assert.equal(kept.length, 1, "only the fresh flow is in the file");
 	assert.ok(!ids.some((x) => kept.includes(x)));
+	// a flow of the sign-up with a password (before the check) is not read back
+	const old = rig();
+	writeFileSync(join(old.dir, "signups.json"), JSON.stringify({ flows: { abc: { id: "abc", created: old.clock.now, touched: old.clock.now, email: "x@example.com", email_ok: old.clock.now, phone_ok: old.clock.now } } }));
+	assert.equal(rig({ dir: old.dir, t: old.clock }).s.flow("abc"), null);
 });
 
 test("at the same moment: two resends, two numbers — one gets through, the other waits", async () => {
 	const r = rig();
-	const { id } = await r.s.start(null, "ana@example.com", IP, SITE);
+	const { id } = await r.s.start(null, { email: "ana@example.com", phone: PHONE }, IP);
 	r.later(61);
 	const both = await Promise.allSettled([r.s.resend(id, IP, SITE), r.s.resend(id, IP, SITE)]);
 	assert.deepEqual(both.map((x) => x.status).sort(), ["fulfilled", "rejected"]);
 	assert.equal(((both.find((x) => x.status === "rejected") as PromiseRejectedResult).reason as SignupError).code, "WAIT");
-	r.s.verifyEmail(id, r.lastCode("email"));
+	await r.s.verifyEmail(id, r.lastCode("email"), IP, SITE);
+	r.s.changePhone(id);
 	r.later(61);
-	const two = await Promise.allSettled([r.s.phone(id, "+40712345678", IP, SITE), r.s.phone(id, "+40712345679", IP, SITE)]);
+	const two = await Promise.allSettled([r.s.phone(id, "+40712345670", IP, SITE), r.s.phone(id, "+40712345679", IP, SITE)]);
 	assert.deepEqual(two.map((x) => x.status).sort(), ["fulfilled", "rejected"]);
-	assert.equal(r.dry!.sent.filter((m) => m.kind === "sms").length, 1);
+	assert.equal(smsCount(r), 2);
+	const won = (two.find((x) => x.status === "fulfilled") as PromiseFulfilledResult<View>).value;
+	assert.deepEqual([won.step, r.s.view(r.s.flow(id)).phone], ["phone_code", won.phone], "the flow names the number the text went to");
 });
 
 test("phone numbers and addresses", () => {
@@ -495,24 +545,25 @@ test("an address's domain: throwaway never, personal while work_email, a domain 
 	assert.deepEqual(await new MailDomains(null).check("ana@nomail.test", true), { ok: true }, "no DNS (the dry run): the lists only");
 });
 
-test("the sign-up's first step refuses those addresses before anything is counted or sent", async () => {
+test("the form refuses those addresses before anything is counted or sent", async () => {
 	const r = rig({ mx: async (d) => (d === "nomail.test" ? "none" : { hosts: [`mx.${d}`] }) });
-	const e1 = await rejects(r.s.start(null, "Ana@GMail.com", IP, SITE), "PERSONAL_EMAIL");
+	const form = (email: string) => ({ email, phone: PHONE });
+	const e1 = await rejects(r.s.start(null, form("Ana@GMail.com"), IP), "PERSONAL_EMAIL");
 	assert.equal(e1.message, "Please use your business email address, as personal addresses (gmail.com) are not accepted.");
 	assert.equal(e1.status, 422);
-	const e2 = await rejects(r.s.start(null, "x@yopmail.com", IP, SITE), "DISPOSABLE_EMAIL");
+	const e2 = await rejects(r.s.start(null, form("x@yopmail.com"), IP), "DISPOSABLE_EMAIL");
 	assert.equal(e2.message, "Please use your business email address, as temporary addresses are not accepted.");
-	const e3 = await rejects(r.s.start(null, "x@nomail.test", IP, SITE), "NO_MAIL");
+	const e3 = await rejects(r.s.start(null, form("x@nomail.test"), IP), "NO_MAIL");
 	assert.equal(e3.message, "Please check the address, as nomail.test does not appear to receive email.");
 	assert.equal(r.dry!.sent.length, 0, "nothing sent");
 	assert.ok(!existsSync(join(r.dir, "signup-log.jsonl")), "nothing in the ledger: a refusal uses up no limit");
-	for (let i = 0; i < 15; i++) await rejects(r.s.start(null, "x@gmail.com", IP, SITE), "PERSONAL_EMAIL", "more refusals than the IP's flows an hour");
-	const { view } = await r.s.start(null, "ana@acme.test", IP, SITE);
+	for (let i = 0; i < 15; i++) await rejects(r.s.start(null, form("x@gmail.com"), IP), "PERSONAL_EMAIL", "more refusals than the IP's flows an hour");
+	const { view } = await r.s.start(null, form("ana@acme.test"), IP);
 	assert.equal(view.step, "email_code", "a work address goes on");
 
 	const home = rig({ policy: { work_email: false } });
-	assert.equal((await home.s.start(null, "ana@gmail.com", IP, SITE)).view.step, "email_code", "work_email off: gmail.com will do");
-	await rejects(home.s.start(null, "ana@mailinator.com", IP, SITE), "DISPOSABLE_EMAIL", "a throwaway one never");
+	assert.equal((await home.s.start(null, form("ana@gmail.com"), IP)).view.step, "email_code", "work_email off: gmail.com will do");
+	await rejects(home.s.start(null, form("ana@mailinator.com"), IP), "DISPOSABLE_EMAIL", "a throwaway one never");
 	assert.equal(home.s.view(null).work_email, false, "the page is told, for its label");
 });
 

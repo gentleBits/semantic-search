@@ -1,4 +1,4 @@
-# Using Semantic search
+# Using semantic-search-demo
 
 ## The web app
 
@@ -73,21 +73,4 @@ embeddings; `uv run resumes index build --extractor none` skips the extraction. 
 
 ## How it works
 
-`resumes` (Python) turns each resume into markdown, extracts skills, years and the rest with a model (each claim
-checked against the text), embeds its sections, and stores everything in one DuckDB file, with a precomputed bitmap of
-the people behind each skill and topic. A question is a set of filters: adding or removing one intersects saved
-bitmaps, so it takes milliseconds and no model. Only ranking reads cards with a model, and only for 50 people or fewer.
-
-The web app is a TypeScript server (`web-ts/`) that runs the assistant on
-[pi](https://www.npmjs.com/package/@earendil-works/pi-agent-core) and talks to the Python engine over a local HTTP
-API. The page is plain JavaScript with no build step.
-
-| Folder | Holds |
-|---|---|
-| `src/agentic_search/` | the engine: `ingest/`, `index/`, `query/`, `session/`, `web/` (its HTTP API), `cli.py` |
-| `web-ts/` | the app server (`src/`), the page (`public/`), its tests (`test/`) |
-| `.agents/`, `.claude/`, `.pi/` | the skill and slash commands for coding agents |
-| `schema/vocab.csv` | the skills and topics the index knows, with their aliases |
-| `data/` | `fixture/` (the tests' synthetic resumes), `seed.json` (where the saved model outputs come from) |
-| `scripts/` | `setup.sh`, `get-data.sh`, and maintenance scripts |
-| `tests/` | the Python tests; `golden/` replays the reference conversation step by step |
+The architecture, the build and the design choices are in the [README](../README.md#how-it-works).

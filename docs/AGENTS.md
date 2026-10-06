@@ -1,4 +1,4 @@
-# Semantic search in a coding agent
+# semantic-search-demo in a coding agent
 
 The same engine the web app uses is a command, `resumes`, that coding agents call. The agent talks with you; every
 search, filter and page is a `resumes` call; ranking is the agent reading at most 50 cards and scoring them.

@@ -47,6 +47,26 @@ def test_every_field_survives_the_operators_commands(tmp_path: Path):
         users.add(path, "x@y", "cretzuel", role="owner")
 
 
+def test_a_member_without_a_password_survives_the_operators_commands(tmp_path: Path):
+    """The email and phone check writes members with no hash: a rewrite by `users add/remove/block` must keep them."""
+    path = tmp_path / "users.json"
+    users.add(path, "dana@example.com", "cretzuel")
+    raw = json.loads(path.read_text())
+    raw["users"]["ana@example.com"] = {"created": "2026-10-06T10:00:00+00:00", "role": "member", "phone": "+40712345678",
+                                       "phones": ["+40712345678", "+40712345679"], "verified": {"email": "…", "phone": "…"},
+                                       "seen": "2026-10-06T10:00:00+00:00", "via": "check"}
+    path.write_text(json.dumps(raw))
+    before = json.loads(path.read_text())["users"]["ana@example.com"]
+    users.add(path, "cole@example.com", "cretzuel")
+    users.remove(path, "cole@example.com")
+    assert json.loads(path.read_text())["users"]["ana@example.com"] == before
+    assert [n for n, _ in users.names(path)] == ["ana@example.com", "dana@example.com"]
+    assert users.block(path, "ana@example.com")
+    rec = json.loads(path.read_text())["users"]["ana@example.com"]
+    assert rec["role"] == "blocked" and rec["phones"] == ["+40712345678", "+40712345679"], "blocked with every number"
+    assert not users.verify_password("", rec.get("hash", "")), "no password, nothing to log in with"
+
+
 def test_an_account_without_a_role_is_an_admin(tmp_path: Path):
     path = tmp_path / "users.json"
     path.write_text(json.dumps({"users": {"dana@example.com": {"hash": users.hash_password("cretzuel"), "created": "2026-09-30T18:00:00+00:00"}}}))
@@ -60,7 +80,7 @@ def test_block(tmp_path: Path):
     member(path, "ana@example.com", "+40712345678")
     assert users.block(path, "ANA@example.com")
     rec = json.loads(path.read_text())["users"]["ana@example.com"]
-    assert rec["role"] == "blocked" and rec["phone"] == "+40712345678" and rec["blocked"], "kept, with its phone: both stay taken"
+    assert rec["role"] == "blocked" and rec["phone"] == "+40712345678" and rec["blocked"], "kept, with its phone: neither passes the check again"
     assert not users.block(path, "nobody@example.com")
     users.add(path, "ana@example.com", "new password!", role="member")
     assert users.role_of(json.loads(path.read_text())["users"]["ana@example.com"]) == "member", "let back in"

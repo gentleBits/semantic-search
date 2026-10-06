@@ -1,7 +1,8 @@
 // Settings: which model the assistant runs on and which one ranks, picked from the models the server offers (the
 // providers it has a key for, and OpenRouter's free ones). No key is shown or typed here. The pick is the logged-in
 // person's own, saved at once (no Save button) and used from the next message; a member picks among the models with a
-// known price and sees the day's allowance. Light/dark and Log out are here too, so the header keeps to the search.
+// known price and sees the day's allowance. Light/dark and Log out (with the email and phone check: "Forget this
+// browser") are here too, so the header keeps to the search.
 import { html, useEffect, useRef, useState } from './lib.js';
 import * as api from './api.js';
 import { num } from './format.js';
@@ -30,7 +31,9 @@ function Appearance() {
   </div>`;
 }
 
-const Account = ({ me }) => me && me.user && html`<div class="me"><span title=${me.user}>${me.user}</span><button type="button" class="link" onClick=${logout}>Log out</button></div>`;
+const Account = ({ me }) => me && me.user && html`<div class="me"><span title=${me.user}>${me.user}</span>${me.signup
+  ? html`<button type="button" class="link" onClick=${logout} title="Your email and phone will be asked for again">Forget this browser</button>`
+  : html`<button type="button" class="link" onClick=${logout}>Log out</button>`}</div>`;
 const SHOW = 40;
 
 const money = (x) => (x == null ? '' : x === 0 ? 'free' : x < 0.01 ? `$${x.toFixed(4)}` : x < 1 ? `$${x.toFixed(2)}` : `$${x.toFixed(x >= 10 ? 0 : 1)}`);

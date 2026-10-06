@@ -9,8 +9,7 @@ let state = {
   ready: false,
   fatal: null,          // the server cannot be reached / the index is not built
   me: null,             // GET /api/me: { login, user, name } — whether the server wants a login, and who is logged in
-  locked: false,        // a login is needed and nobody is logged in: the page shows the login instead
-  signupOpen: false,    // … or the sign-up, when the server offers one and the address says #/signup
+  locked: false,        // nobody is let in yet: the page shows the email and phone check (or, without one, the login)
   config: null,         // the collection: its words, its limits
   sessions: [],
   sid: null,
@@ -85,14 +84,17 @@ function show(snap, { from = 'panel' } = {}) {
   if (changed && state.detail && state.detail.person && from !== 'open') refreshDetail();
 }
 
+// The address is the search's, as chat apps do it: /c/<id>. An open resume is not in it. Links of before
+// (#/<id>, #/<id>/<resume>, #/signup) still open their search.
 function route() {
-  const bits = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  if (bits[0] === 'signup') return { sid: null, person: null };
-  return { sid: bits[0] || null, person: bits[1] || null };
+  const m = /^\/c\/([^/]+)\/?$/.exec(location.pathname);
+  if (m) return { sid: decodeURIComponent(m[1]) };
+  const old = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean)[0];
+  return { sid: old && old !== 'signup' ? old : null };
 }
-function go(sid, person) {
-  const hash = '#/' + (sid || '') + (person ? '/' + person : '');
-  if (location.hash !== hash) history.replaceState(null, '', hash);
+function go(sid) {
+  const path = sid ? '/c/' + encodeURIComponent(sid) : '/';
+  if (location.pathname !== path || location.hash) history.replaceState(null, '', path);
 }
 
 // ---------------------------------------------------------------- start, conversations
@@ -103,12 +105,12 @@ export async function boot() {
   if (!me.ok) { set({ ready: true, fatal: me.error }); return; }
   set({ me: me.data });
   await loadFeatures(me.data.features);
-  if (me.data.login && !me.data.user) { set({ ready: true, locked: true, signupOpen: !!me.data.signup && location.hash === '#/signup' }); return; }
-  set({ locked: false, signupOpen: false });
+  if (me.data.login && !me.data.user) { set({ ready: true, locked: true }); return; }
+  set({ locked: false });
   const cfg = await api.get('/config');
   if (!cfg.ok) { set({ ready: true, fatal: cfg.error }); return; }
   set({ config: cfg.data });
-  document.title = cfg.data.name + ' — search';
+  document.title = cfg.data.name + (cfg.data.demo ? ' — search demo' : ' — search');
   const want = route();
   const list = await api.get('/sessions');
   const sessions = list.ok ? list.data.sessions : [];
@@ -120,7 +122,6 @@ export async function boot() {
   enter(opened.data);
   set({ ready: true });
   if (!sessions.some((x) => x.id === opened.data.session.id)) refreshSessions();     // made just now: the menu lists it too
-  if (want.person && want.sid === opened.data.session.id) openPerson(want.person, { quiet: true });
   if (opened.data.busy) follow();
 }
 
@@ -131,23 +132,15 @@ export async function login(user, password) {
   return r;
 }
 
-// The sign-up: its own address, so that a refresh stays on it; the server knows the step.
-export function openSignup() {
-  history.replaceState(null, '', '#/signup');
-  set({ signupOpen: true });
-}
-export function closeSignup() {
-  history.replaceState(null, '', '#/');
-  set({ signupOpen: false });
-}
-export async function signedUp() {
-  history.replaceState(null, '', '#/');
-  set({ signupOpen: false });
+// The email and phone check passed: the page starts over, as after the login.
+export async function checked() {
+  if (location.hash.startsWith('#/signup')) history.replaceState(null, '', '/');     // an old link to the sign-up
   await boot();
 }
 
 export async function logout() {
   await api.post('/logout');
+  document.title = 'Semantic search';     // the front door's name, as before boot
   set({ locked: true, pop: null, sid: null, chat: [], snap: null, sessions: [], detail: null, live: null, busy: false, me: { ...(state.me || {}), user: null } });
   go(null);
 }
@@ -249,7 +242,6 @@ export async function act(action, { keep = false } = {}) {
   show(d.state, { from: action.type === 'open' ? 'open' : 'panel' });
   if (d.person) {
     set({ detail: { id: d.person.id, person: d.person, loading: false } });
-    go(state.sid, d.person.id);
   }
   if (action.type !== 'page' && action.type !== 'next' && action.type !== 'prev' && action.type !== 'open') refreshSessions();
   const rank = d.state.rank;
@@ -266,7 +258,6 @@ export async function openPerson(ref, { quiet = false } = {}) {
     const r = await api.get('/sessions/' + state.sid + '/people/' + encodeURIComponent(ref));
     if (!r.ok) { set({ detail: null }); notify(r.error); return; }
     set({ detail: { id: r.data.id, person: r.data, loading: false } });
-    go(state.sid, r.data.id);
     return;
   }
   const d = await act({ type: 'open', id: ref }, { keep: true });
@@ -282,7 +273,6 @@ async function refreshDetail() {
 
 export function closeDetail() {
   set({ detail: null });
-  go(state.sid);
 }
 
 // A #N in an answer: show the row (go to its page) and open the resume.
@@ -321,7 +311,6 @@ export async function say(text, { attachment = null, auto = null } = {}) {
         break;
       case 'open':
         set({ detail: { id: ev.id, person: ev.person, loading: false } });
-        go(sid, ev.id);
         break;
       case 'done':
         if (ev.message) push(ev.message);
