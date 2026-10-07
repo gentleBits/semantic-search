@@ -6,6 +6,8 @@ Shipped in this repository:
 |---|---|---|
 | Preact | `web-ts/public/vendor/preact-htm.js` | MIT, text in `web-ts/public/vendor/LICENSES.txt` |
 | htm | `web-ts/public/vendor/preact-htm.js` | Apache-2.0, text in `web-ts/public/vendor/LICENSES.txt` |
+| flag-icons (the check's country flags) | `web-ts/public/vendor/flags/` | MIT, text in `web-ts/public/vendor/LICENSES.txt` |
+| libphonenumber-js (its metadata from Google's libphonenumber) | `web-ts/public/vendor/libphonenumber-min.js`, `phone-examples.js` | MIT (metadata Apache-2.0), text in `web-ts/public/vendor/LICENSES.txt` |
 | Geist and Geist Mono fonts | `web-ts/public/fonts/` | SIL Open Font License 1.1, text in `web-ts/public/fonts/OFL.txt` |
 | The throwaway email domain list | `web-ts/data/disposable-domains.txt` | CC0, from [disposable-email-domains](https://github.com/disposable-email-domains/disposable-email-domains) |
 

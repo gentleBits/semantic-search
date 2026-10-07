@@ -6,12 +6,13 @@
 import { html, useEffect, useRef, useState } from './lib.js';
 import * as I from './icons.js';
 import * as api from './api.js';
+import * as P from './phone.js';
 import { checked } from './store.js';
 
 const clock = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
 export function Check() {
-  const [view, setView] = useState(null);     // what the server says: { step, email, phone, resend_in, sends_left, expired, work_email }
+  const [view, setView] = useState(null);     // what the server says: { step, email, phone, resend_in, sends_left, expired, work_email, countries }
   const [got, setGot] = useState(0);          // when `view` arrived: the resend countdown runs from it
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
@@ -19,7 +20,9 @@ export function Check() {
   const [wait, setWait] = useState(null);     // { until } — a WAIT answer's retry_in, counting down
   const [note, setNote] = useState(null);     // one line that is not an error ("A new code is on its way.")
   const [email, setEmail] = useState('');
-  const [phone, setPhone] = useState('');
+  const [phone, setPhone] = useState('');     // as typed, without the country's code (unless typed with it)
+  const [country, setCountry] = useState(null);
+  const [countries, setCountries] = useState([]);
   const [code, setCode] = useState('');
   const [workEmail, setWorkEmail] = useState(true);
   const first = useRef(null);
@@ -29,11 +32,21 @@ export function Check() {
     setView(v); setGot(at); setNow(at); setCode('');
     if (v.work_email !== undefined) setWorkEmail(v.work_email !== false);
     if (v.email) setEmail(v.email);
-    if (v.phone) setPhone(v.phone);
+    const list = v.countries || countries;
+    if (v.countries) {
+      setCountries(v.countries);
+      setCountry((c) => (c && v.countries.includes(c) ? c : P.guess(v.countries)));
+    }
+    if (v.phone) {
+      const s = P.split(v.phone, list);
+      if (s.country) setCountry(s.country);
+      setPhone(s.text);
+    }
   };
   useEffect(() => {
     (async () => {
-      const r = await api.get('/signup');
+      const [r, loaded] = await Promise.all([api.get('/signup'), P.load().then(() => true, () => false)]);
+      if (!loaded) { setErr('Part of this page did not load. Please reload it.'); return; }
       if (!r.ok) { setErr(r.error.text); setView({ step: 'details' }); return; }
       take(r.data);
       if (r.data.expired) setNote('That took too long. Please start again.');
@@ -43,7 +56,7 @@ export function Check() {
   }, []);
   useEffect(() => { if (first.current) first.current.focus(); }, [view && view.step]);
 
-  if (!view) return html`<div class="login"><div class="login-card signup-card" aria-busy="true"></div></div>`;
+  if (!view) return html`<div class="login"><div class="login-card signup-card" aria-busy=${!err}>${err && html`<span class="form-error" role="alert">${err}</span>`}</div></div>`;
   const step = view.step;
   const resendIn = Math.max(0, (view.resend_in || 0) - Math.floor(Math.max(0, now - got) / 1000));   // the tick may be older than the answer
   const waitLeft = wait ? Math.max(0, Math.ceil((wait.until - now) / 1000)) : 0;
@@ -85,9 +98,9 @@ export function Check() {
   const submit = (e) => {
     e.preventDefault();
     if (busy) return;
-    if (step === 'details') return email.trim() && phone.trim() && send(post('/start', { email: email.trim(), phone: phone.trim() }));
+    if (step === 'details') return email.trim() && phone.trim() && send(post('/start', { email: email.trim(), phone: P.full(phone, country) }));
     if (step === 'email_code') return code.length === 6 && send(post('/email/verify', { code }));
-    if (step === 'phone') return phone.trim() && send(post('/phone', { phone: phone.trim() }));
+    if (step === 'phone') return phone.trim() && send(post('/phone', { phone: P.full(phone, country) }));
     if (step === 'phone_code') return code.length === 6 && send(post('/phone/verify', { code }));
   };
 
@@ -96,10 +109,28 @@ export function Check() {
     <input id="s-code" class="input code-input" ref=${first} value=${code} onInput=${(e) => typed(e.target.value, path)}
       inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" maxlength="7" spellcheck="false" placeholder="••••••" aria-describedby="s-help" />
   </div>`;
+  const onPhone = (e) => {   // grouped while typing at the end; a delete or an edit in the middle is left as it is
+    const el = e.target;
+    const t = P.typed(el.value, country, countries, el.selectionStart === el.value.length && !String(e.inputType || '').startsWith('delete'));
+    setCountry(t.country); setPhone(t.text);
+  };
+  const onCountry = (c) => { setCountry(c); setPhone((t) => P.typed(t, c, countries, true).text); };
+  // the country: its flag and code; the list (the browser's own, over the box) names each one
+  const opts = P.options(countries);
+  const chosen = opts.find((o) => o.code === country);
   const phoneField = (ref) => html`<div class="field">
     <label for="s-phone">Mobile number</label>
-    <input id="s-phone" class="input" type="tel" ref=${ref} value=${phone} onInput=${(e) => setPhone(e.target.value)} autocomplete="tel" inputmode="tel" placeholder="+40 712 345 678" />
-    <span class="help">With your country code.</span>
+    <div class="phone-row">
+      <div class="phone-country" title=${chosen ? chosen.name : ''}>
+        ${chosen && html`<img key=${chosen.code} class="flag" src=${`/vendor/flags/${chosen.code.toLowerCase()}.svg`} alt="" width="20" height="15" onError=${(e) => { e.target.style.visibility = 'hidden'; }} />`}
+        <span>${chosen ? `+${chosen.dial}` : ''}</span>
+        <${I.Down} size=${12} />
+        <select id="s-country" aria-label="Country" value=${country} onChange=${(e) => onCountry(e.target.value)}>
+          ${opts.map((o) => html`<option value=${o.code}>${o.flag} ${o.name} +${o.dial}</option>`)}
+        </select>
+      </div>
+      <input id="s-phone" class="input" type="tel" ref=${ref} value=${phone} onInput=${onPhone} autocomplete="tel-national" inputmode="tel" />
+    </div>
   </div>`;
   const again = () => {
     if (!view.sends_left) return html`<span class="hint">That was the last code we can send this time. <button type="button" class="link" onClick=${startOver}>Start again</button></span>`;

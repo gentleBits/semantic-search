@@ -4,7 +4,7 @@
   "type": "module",
   "description": "The app server of `resumes web`: the page, the assistant on pi (pi-agent-core + pi-ai in-process), the ranking calls, settings and providers. The Python engine sits behind its HTTP API (`resumes engine`).",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.19"
   },
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json",
@@ -14,9 +14,9 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "0.74.0",
-    "@earendil-works/pi-ai": "0.74.0",
-    "@earendil-works/pi-coding-agent": "0.74.0",
+    "@earendil-works/pi-agent-core": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.0.4",
     "@hono/node-server": "^1.19.17",
     "hono": "^4.13.11",
     "libphonenumber-js": "^1.13.14"

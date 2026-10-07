@@ -1,0 +1,101 @@
+{
+ "about": "OpenRouter's free models the app offers, as picked live; shown only on a first start with nothing cached, until the live list arrives",
+ "fetched_at": "2026-10-07T17:00:31+00:00",
+ "rows": [
+  {
+   "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
+   "name": "NVIDIA: Nemotron 3 Ultra (free)",
+   "context": 1000000,
+   "max_tokens": 65536,
+   "in_per_m": 0,
+   "out_per_m": 0,
+   "cache_read_per_m": 0,
+   "reasoning": true,
+   "levels": [
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ],
+   "image": false,
+   "structured": false
+  },
+  {
+   "id": "google/gemma-4-31b-it:free",
+   "name": "Google: Gemma 4 31B (free)",
+   "context": 262144,
+   "max_tokens": 32768,
+   "in_per_m": 0,
+   "out_per_m": 0,
+   "cache_read_per_m": 0,
+   "reasoning": true,
+   "levels": [
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ],
+   "image": true,
+   "structured": true
+  },
+  {
+   "id": "nvidia/nemotron-3-super-120b-a12b:free",
+   "name": "NVIDIA: Nemotron 3 Super (free)",
+   "context": 262144,
+   "max_tokens": 235929,
+   "in_per_m": 0,
+   "out_per_m": 0,
+   "cache_read_per_m": 0,
+   "reasoning": true,
+   "levels": [
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ],
+   "image": false,
+   "structured": true
+  },
+  {
+   "id": "poolside/laguna-s-2.1:free",
+   "name": "Poolside: Laguna S 2.1 (free)",
+   "context": 262144,
+   "max_tokens": 32768,
+   "in_per_m": 0,
+   "out_per_m": 0,
+   "cache_read_per_m": 0,
+   "reasoning": true,
+   "levels": [
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ],
+   "image": false,
+   "structured": false
+  },
+  {
+   "id": "openrouter/free",
+   "name": "Free Models Router",
+   "context": 200000,
+   "max_tokens": 16384,
+   "in_per_m": 0,
+   "out_per_m": 0,
+   "cache_read_per_m": 0,
+   "reasoning": true,
+   "levels": [
+    "off",
+    "minimal",
+    "low",
+    "medium",
+    "high"
+   ],
+   "image": true,
+   "structured": true
+  }
+ ]
+}

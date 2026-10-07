@@ -20,7 +20,7 @@ from pathlib import Path
 from ..config import Config
 from ..errors import ResumesError
 
-NODE_MIN = 22
+NODE_MIN = (22, 19)  # pi 1.0's floor
 NODE_CANDIDATES = ["/opt/homebrew/opt/node@22/bin/node", "/opt/homebrew/bin/node", "/usr/local/bin/node"]
 READY_TIMEOUT = 60.0
 
@@ -34,14 +34,14 @@ def find_node() -> str | None:
 
 def check_node(node: str | None) -> str:
     if not node:
-        raise ResumesError("WEB_UNAVAILABLE", "node not found: install Node 22 (brew install node@22) for the web UI")
+        raise ResumesError("WEB_UNAVAILABLE", "node not found: install Node 22.19 or newer (brew install node) for the web UI")
     try:
         v = subprocess.run([node, "--version"], capture_output=True, text=True, timeout=10).stdout.strip()
     except (OSError, subprocess.SubprocessError) as e:
         raise ResumesError("WEB_UNAVAILABLE", f"node does not run: {e}") from None
-    major = int(v.lstrip("v").split(".")[0] or 0) if v else 0
-    if major < NODE_MIN:
-        raise ResumesError("WEB_UNAVAILABLE", f"node {v} is too old: the web UI needs Node {NODE_MIN}+")
+    parts = [int(x) if x.isdigit() else 0 for x in v.lstrip("v").split(".")[:2]] if v else []
+    if tuple(parts + [0, 0])[:2] < NODE_MIN:
+        raise ResumesError("WEB_UNAVAILABLE", f"node {v} is too old: the web UI needs Node {NODE_MIN[0]}.{NODE_MIN[1]}+")
     return node
 
 

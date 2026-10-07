@@ -129,7 +129,7 @@ export const zeroUsage = (): Usage => ({ in: 0, out: 0, cached: 0, calls: 0, cos
 
 export function addUsage(total: Usage, u: PiUsage | undefined | null, calls = 1): Usage {
 	if (u) {
-		total.in += u.input || 0;
+		total.in += (u.input || 0) + (u.cacheWrite || 0); // pi-ai counts the prompt tokens written to the cache apart
 		total.out += u.output || 0;
 		total.cached += u.cacheRead || 0;
 		total.cost += (u.cost && u.cost.total) || 0;

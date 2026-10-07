@@ -859,3 +859,10 @@ textarea.input { height: auto; padding: 8px 10px; resize: vertical; min-height: 
 .login .signup-card .help.ok { font-size: 12px; }
 .settings-pop .help.yours, .settings-pop .help.allowance, .model-pop .help.yours { font-size: 11px; color: var(--ink-3); margin-top: -4px; }
 .login .choice.main:disabled { opacity: .5; cursor: default; }
+.login .phone-row { display: flex; gap: 8px; }
+.login .phone-row .phone-country { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 9px 0 10px; border: 1px solid var(--line-3); border-radius: 8px; background: var(--white); font-size: 13px; color: var(--ink); }
+.login .phone-row .phone-country:focus-within { border-color: var(--ink); }
+.login .phone-row .phone-country .flag { width: 20px; height: 15px; border-radius: 2px; object-fit: cover; box-shadow: 0 0 0 1px rgba(var(--shade), .14); }
+.login .phone-row .phone-country svg { color: var(--ink-3); margin-left: -2px; }
+.login .phone-row .phone-country select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+.login .phone-row #s-phone { flex: 1; min-width: 0; }

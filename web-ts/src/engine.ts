@@ -28,7 +28,7 @@ export interface EngineConfig {
 	fields?: Fields; // older engines omit it
 	sessions_dir?: string; // the agent's memory lives next to a conversation's files
 	defaults: { model: string; effort: string | null; judge_model: string | null; judge_effort: string | null };
-	judge: { batch: number; parallel: number; note_max: number };
+	judge: { batch: number; parallel: number; note_max: number; idle_ms?: number }; // idle_ms: the tests' silence limit
 }
 
 export interface Fields {

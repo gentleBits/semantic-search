@@ -4,7 +4,7 @@
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { AuthStorage, type AuthStorageBackend } from "@earendil-works/pi-coding-agent";
+import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 import { ResumesError } from "./errors.js";
 import { writeJsonAtomic } from "./files.js";
 import { PROVIDERS, THINKING_LEVELS, provider as providerOf } from "./providers.js";
@@ -12,6 +12,12 @@ import { type Thinking, thinkingLevel } from "./text.js";
 
 export const FILE = "settings.json";
 export const USERS_FILE = "user-settings.json";
+const envKey = (provider: string): string | undefined => {
+	const name = PROVIDERS[provider]?.env;
+	const v = name ? process.env[name] : undefined;
+	return v?.trim() ? v : undefined;
+};
+
 export const KEYS_ARE_THE_SERVERS = "keys are set on the server, not here: OPENAI_API_KEY / OPENROUTER_API_KEY in its environment, or the keys of .resumes/settings.json";
 
 export interface Choice {
@@ -81,55 +87,55 @@ export function writeFile(path: string, data: FileShape): void {
 	renameSync(tmp, path);
 }
 
-/** pi's `AuthStorage` over the `keys` of settings.json: `{"openrouter": "sk-or-…"}` ⇄ `{"openrouter": {"type": "api_key", "key": "sk-or-…"}}`. */
-export class SettingsKeysBackend implements AuthStorageBackend {
+/** pi's credential store over the `keys` of settings.json: `{"openrouter": "sk-or-…"}` ⇄ `{type: "api_key", key: "sk-or-…"}`
+ * per provider. Read from the file each time, so a key written there by hand counts at once. */
+export class SettingsKeys implements CredentialStore {
 	constructor(public path: string) {}
 
-	private load(): { file: FileShape; current: string } {
+	private keys(): Record<string, string> {
+		return readFile(this.path).keys;
+	}
+
+	async read(providerId: string): Promise<Credential | undefined> {
+		const key = this.keys()[providerId];
+		return key ? { type: "api_key", key } : undefined;
+	}
+
+	async list(): Promise<readonly CredentialInfo[]> {
+		return Object.keys(this.keys()).map((providerId) => ({ providerId, type: "api_key" as const }));
+	}
+
+	async modify(providerId: string, fn: (current: Credential | undefined) => Promise<Credential | undefined>): Promise<Credential | undefined> {
+		const current = await this.read(providerId);
+		const next = await fn(current);
+		if (next === undefined) return current;
 		const file = readFile(this.path);
-		const auth: Record<string, { type: "api_key"; key: string }> = {};
-		for (const [p, key] of Object.entries(file.keys)) auth[p] = { type: "api_key", key };
-		return { file, current: JSON.stringify(auth) };
+		if (next.type === "api_key" && next.key?.trim()) file.keys[providerId] = next.key;
+		else delete file.keys[providerId];
+		writeFile(this.path, file);
+		return next;
 	}
 
-	private store(file: FileShape, next: string): void {
-		const keys: Record<string, string> = {};
-		let parsed: unknown = {};
-		try {
-			parsed = JSON.parse(next);
-		} catch {
-			parsed = {};
-		}
-		if (parsed && typeof parsed === "object") {
-			for (const [p, cred] of Object.entries(parsed as Record<string, any>)) {
-				if (cred && cred.type === "api_key" && typeof cred.key === "string" && cred.key.trim()) keys[p] = cred.key;
-			}
-		}
-		writeFile(this.path, { ...file, keys });
+	async delete(providerId: string): Promise<void> {
+		const file = readFile(this.path);
+		if (!(providerId in file.keys)) return;
+		delete file.keys[providerId];
+		writeFile(this.path, file);
 	}
 
-	withLock<T>(fn: (current: string | undefined) => { result: T; next?: string }): T {
-		const { file, current } = this.load();
-		const { result, next } = fn(current);
-		if (next !== undefined) this.store(file, next);
-		return result;
-	}
-
-	async withLockAsync<T>(fn: (current: string | undefined) => Promise<{ result: T; next?: string }>): Promise<T> {
-		const { file, current } = this.load();
-		const { result, next } = await fn(current);
-		if (next !== undefined) this.store(file, next);
-		return result;
+	/** The key of a provider, sync: the file's (no environment). */
+	stored(providerId: string): string | undefined {
+		return this.keys()[providerId];
 	}
 }
 
 export class Settings {
 	chat: Choice = {};
 	judge: Choice = {};
-	readonly auth: AuthStorage;
+	readonly credentials: SettingsKeys;
 
 	constructor(public path: string) {
-		this.auth = AuthStorage.fromStorage(new SettingsKeysBackend(path));
+		this.credentials = new SettingsKeys(path);
 		this.reload();
 	}
 
@@ -141,7 +147,6 @@ export class Settings {
 		const f = readFile(this.path);
 		this.chat = f.chat;
 		this.judge = f.judge;
-		this.auth.reload();
 	}
 
 	/** Writes the choices; the keys are kept as they are (they change only through `auth`). */
@@ -150,15 +155,15 @@ export class Settings {
 		writeFile(this.path, { chat: this.chat, judge: this.judge, keys: f.keys });
 	}
 
-	/** The key for a provider: the settings' first, else the environment's (pi's own resolution). */
-	key(provider: string): Promise<string | undefined> {
-		return this.auth.getApiKey(provider, { includeFallback: false });
+	/** The key for a provider: the settings' first, else the environment's, as pi resolves it (a stored key owns its
+	 * provider). */
+	async key(provider: string): Promise<string | undefined> {
+		return this.credentials.stored(provider) || envKey(provider);
 	}
 
 	keySource(provider: string): "settings" | "env" | null {
-		const s = this.auth.getAuthStatus(provider);
-		if (s.configured && s.source === "stored") return "settings";
-		return s.source === "environment" ? "env" : null;
+		if (this.credentials.stored(provider)) return "settings";
+		return envKey(provider) ? "env" : null;
 	}
 
 	chatChoice(d: Defaults, mine?: Picks | null): Chosen {

@@ -39,15 +39,26 @@ const SHOW = 40;
 const money = (x) => (x == null ? '' : x === 0 ? 'free' : x < 0.01 ? `$${x.toFixed(4)}` : x < 1 ? `$${x.toFixed(2)}` : `$${x.toFixed(x >= 10 ? 0 : 1)}`);
 const ctx = (n) => (!n ? '' : n >= 1000000 ? `${(n / 1000000).toFixed(n % 1000000 ? 1 : 0)}M` : `${Math.round(n / 1000)}k`);
 
-// The provider's list, filtered as one types; the chosen one first. Only a model of the list can be picked.
+// A level the model does not take shows as the one it runs at: the next one up, else the nearest below (as pi clamps).
+const ORDER = ['off', 'minimal', 'low', 'medium', 'high'];
+function clampLevel(lv, l) {
+  if (lv.includes(l)) return l;
+  const i = Math.max(0, ORDER.indexOf(l));
+  return ORDER.slice(i).find((x) => lv.includes(x)) || ORDER.slice(0, i).reverse().find((x) => lv.includes(x)) || lv[0];
+}
+
+// The provider's list, filtered as one types, in its own order: a pick is marked where it stands, nothing moves. Only a
+// model of the list can be picked.
 function ModelPicker({ id, value, onPick, list, thinking, onThinking, levels }) {
   const [q, setQ] = useState('');
   const rows = list.models || [];
   const needle = q.trim().toLowerCase();
   const hits = needle ? rows.filter((m) => m.id.toLowerCase().includes(needle) || m.name.toLowerCase().includes(needle)) : rows;
   const current = rows.find((m) => m.id === value);
-  const shown = [...(current && !needle ? [current] : []), ...hits.filter((m) => !(current && !needle && m.id === value))].slice(0, SHOW);
+  const shown = hits.slice(0, SHOW);
+  if (current && !needle && !shown.includes(current)) shown.push(current);   // a pick further down a long list stays in sight
   const canThink = !current || current.reasoning;
+  const lv = (current && current.levels) || levels;   // Sol and Astra start at low
   return html`<div class="picker">
     <input id=${id} class="input" value=${q} onInput=${(e) => setQ(e.target.value)} autocomplete="off" spellcheck="false"
       placeholder=${list.loading ? 'Loading the list…' : rows.length ? `Filter ${num(rows.length)} models…` : 'No models'} />
@@ -65,7 +76,7 @@ function ModelPicker({ id, value, onPick, list, thinking, onThinking, levels }) 
     <div class="row-2">
       <span class="chosen">${value ? html`<b>${value}</b>` : html`<span class="help">Pick a model</span>`}</span>
       <label class="think-lvl">thinking
-        <select class="input" value=${thinking} disabled=${!canThink} onChange=${(e) => onThinking(e.target.value)}>${levels.map((l) => html`<option value=${l}>${l}</option>`)}</select>
+        <select class="input" value=${clampLevel(lv, thinking)} disabled=${!canThink} onChange=${(e) => onThinking(e.target.value)}>${lv.map((l) => html`<option value=${l}>${l}</option>`)}</select>
       </label>
     </div>
   </div>`;

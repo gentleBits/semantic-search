@@ -1,10 +1,11 @@
 /**
- * The chat's providers and the models each offers: on OpenRouter only the free ones that take tools (the operator pays
- * for nothing), on OpenAI pi's registry plus OpenAI's own list. Lists are cached an hour, in memory and on disk.
+ * The chat's providers and the models each offers: on OpenRouter a few free ones that take tools (the operator pays
+ * for nothing; `pickFree`), on OpenAI the GPT-6 models of OPENAI_MODELS. Lists are cached an hour, in memory and on disk.
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { type Api, type Model, getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { ResumesError } from "./errors.js";
 
 export const OPENROUTER_URL = "https://openrouter.ai/api/v1";
@@ -27,30 +28,41 @@ export const PROVIDERS: Record<string, Provider> = {
 };
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high"];
 
+/** The OpenAI models on offer, most capable first: Astra (the frontier one), Sol (everyday), Luna (fast and cheap). */
+export const OPENAI_MODELS = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"];
+
 export function provider(pid: string): Provider {
 	const p = PROVIDERS[(pid || "").toLowerCase()];
 	if (!p) throw new ResumesError("BAD_ARGUMENT", `no provider “${pid}”: use one of ${Object.keys(PROVIDERS).join(", ")}`);
 	return p;
 }
 
-export type Fetch = (url: string, headers?: Record<string, string>) => Promise<{ status: number; body: any }>;
+export type Fetch = (url: string, headers?: Record<string, string>, body?: unknown) => Promise<{ status: number; body: any; text?: string }>;
 
-/** → {status, JSON body}. Network trouble is a ResumesError; an HTTP error status is returned, not thrown. */
-export const httpGet: Fetch = async (url, headers = {}) => {
+/** → {status, JSON body, the text}; a `body` makes it a JSON POST. Network trouble is a ResumesError; an HTTP error status
+ * is returned, not thrown. */
+export const httpGet: Fetch = async (url, headers = {}, payload) => {
 	let res: Response;
 	try {
-		res = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "resumes-web", ...headers }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+		const post = payload === undefined ? {} : { method: "POST", body: JSON.stringify(payload) };
+		res = await fetch(url, { ...post, headers: { Accept: "application/json", "User-Agent": "resumes-web", ...(payload === undefined ? {} : { "Content-Type": "application/json" }), ...headers }, signal: AbortSignal.timeout(TIMEOUT_MS) });
 	} catch (e) {
 		const reason = (e as Error)?.name === "TimeoutError" ? "timed out" : String((e as any)?.cause?.message || (e as Error)?.message || e);
 		throw new ResumesError("PROVIDER_UNREACHABLE", `${new URL(url).host}: ${reason}`);
 	}
+	let text = "";
+	try {
+		text = await res.text();
+	} catch {
+		text = "";
+	}
 	let body: any = {};
 	try {
-		body = await res.json();
+		body = JSON.parse(text);
 	} catch {
 		body = {};
 	}
-	return { status: res.status, body: body && typeof body === "object" ? body : {} };
+	return { status: res.status, body: body && typeof body === "object" ? body : {}, text };
 };
 
 export interface Row {
@@ -62,6 +74,7 @@ export interface Row {
 	out_per_m: number | null;
 	cache_read_per_m: number | null;
 	reasoning: boolean;
+	levels?: string[]; // the thinking levels it takes, of THINKING_LEVELS (Sol and Astra: no off, no minimal)
 	image: boolean;
 	structured: boolean;
 }
@@ -76,6 +89,50 @@ const round4 = (x: unknown): number => Math.round((Number(x) || 0) * 10000) / 10
 const byName = (a: Row, b: Row) => (a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0);
 
 export const isFree = (r: Row): boolean => r.in_per_m === 0 && r.out_per_m === 0;
+
+export const OPENROUTER_RANKINGS = "https://openrouter.ai/rankings";
+
+/** The labs whose free models OpenRouter's list offers, besides the free versions of the week's top 10. */
+export const OPENROUTER_MAKERS = ["nvidia", "google", "meta-llama", "mistralai", "qwen", "deepseek", "openai", "anthropic", "microsoft", "x-ai", "z-ai", "moonshotai", "xiaomi", "thinkingmachines", "poolside", "cohere", "amazon", "tencent", "minimax"];
+export const OPENROUTER_MAX = 8;
+export const PROBE_TTL_MS = 7 * 24 * 3600_000; // a model's answer to the one-word try is kept a week
+const SMALL = /(^|[-.])(nano|mini|small|xs|tiny|lite|micro|lightning)([-.]|$)/;
+
+/** The week's top models on OpenRouter, best first: the leaderboard its rankings page publishes (schema.org
+ * "Top LLMs by weekly token usage"). There is no API for it: a page that has changed gives []. */
+export function topIds(html: string): string[] {
+	const t = html.replace(/\\"/g, '"');
+	const at = t.indexOf("Top LLMs by weekly token usage");
+	if (at < 0) return [];
+	return [...t.slice(at, at + 8000).matchAll(/"position":\d+,"name":"[^"]*","item":"https:\/\/openrouter\.ai\/([a-z0-9._-]+\/[a-z0-9._:-]+)"/g)].map((m) => m[1]);
+}
+
+/** Billions of parameters a model's id says it has: "nemotron-3-ultra-550b-a55b" → 550 in all, 55 at a time. */
+export function sizeOf(id: string): { total: number | null; active: number | null } {
+	const name = (id.split("/")[1] || id).replace(/:free$/, "");
+	const total = /(?:^|-)(\d+(?:\.\d+)?)b(?=$|-)/.exec(name);
+	const active = /-a(\d+(?:\.\d+)?)b(?=$|-)/.exec(name);
+	return { total: total ? Number(total[1]) : null, active: active ? Number(active[1]) : null };
+}
+
+/** The free models worth offering, at most OPENROUTER_MAX: the free versions of the week's top models first (in their
+ * order), then the free models of OPENROUTER_MAKERS that are not small (no nano/mini/small/xs…, at least 20B in all and
+ * 10B at a time when the id says), not a preview; last, OpenRouter's own free router (a free model at random). Never
+ * an anonymous "stealth" model. */
+export function pickFree(rows: Row[], top: string[] = []): Row[] {
+	const router = rows.find((r) => r.id === "openrouter/free" && isFree(r));
+	const free = rows.filter(isFree).filter((r) => !/^(openrouter|stealth)\//.test(r.id));
+	const base = (id: string) => id.replace(/:free$/, "");
+	const ranked: Row[] = [];
+	for (const t of top) for (const r of free) if (base(r.id) === base(t) && !ranked.includes(r)) ranked.push(r);
+	const sound = (r: Row) => {
+		const name = base(r.id.split("/")[1] || r.id);
+		const { total, active } = sizeOf(r.id);
+		return OPENROUTER_MAKERS.includes(r.id.split("/")[0]) && !SMALL.test(name) && !/preview/.test(name) && (total === null || total >= 20) && (active === null || active >= 10);
+	};
+	const rest = free.filter((r) => !ranked.includes(r) && sound(r)).sort(byName);
+	return [...[...ranked, ...rest].slice(0, OPENROUTER_MAX - (router ? 1 : 0)), ...(router ? [router] : [])];
+}
 
 export function openrouterRows(raw: any): Row[] {
 	const rows: Row[] = [];
@@ -94,6 +151,7 @@ export function openrouterRows(raw: any): Row[] {
 			out_per_m: perMillion(pricing.completion),
 			cache_read_per_m: perMillion(pricing.input_cache_read),
 			reasoning: params.includes("reasoning") || params.includes("reasoning_effort"),
+			...(params.includes("reasoning") || params.includes("reasoning_effort") ? { levels: THINKING_LEVELS } : {}),
 			image: (arch.input_modalities || []).includes("image"),
 			structured: params.includes("structured_outputs") || params.includes("response_format"),
 		});
@@ -124,23 +182,20 @@ export function openaiOffered(id: string): boolean {
 	return !!v && chatModelId(id) && !v.snapshot && !v.alias && v.generation >= 4;
 }
 
-const byVersion = (a: Row, b: Row) => {
-	const ga = openaiVersion(a.id)?.generation || 0;
-	const gb = openaiVersion(b.id)?.generation || 0;
-	return gb - ga || a.id.length - b.id.length || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-};
-
-/** pi's registry rows plus the live ids it does not know (no price or context known), newest first. */
-export function openaiRows(registry: Model<Api>[], live: string[] | null): Row[] {
+/** The models of `allowed`, in that order: pi's registry rows, plus a live id it does not know (no price or context). */
+export function openaiRows(registry: Model<Api>[], live: string[] | null, allowed: string[] = OPENAI_MODELS): Row[] {
 	const rows = registryRows(registry.filter((m) => m.provider === "openai")).filter((r) => openaiOffered(r.id));
 	const known = new Set(rows.map((r) => r.id));
 	for (const id of live || []) {
 		if (known.has(id) || !openaiOffered(id)) continue;
 		known.add(id);
-		rows.push({ id, name: id, context: 0, max_tokens: FALLBACK_MAX_TOKENS, in_per_m: null, out_per_m: null, cache_read_per_m: null, reasoning: /^(gpt-[5-9]|o\d)/.test(id), image: false, structured: true });
+		const reasoning = /^(gpt-[5-9]|o\d)/.test(id);
+		rows.push({ id, name: id, context: 0, max_tokens: FALLBACK_MAX_TOKENS, in_per_m: null, out_per_m: null, cache_read_per_m: null, reasoning, ...(reasoning ? { levels: THINKING_LEVELS } : {}), image: false, structured: true });
 	}
-	return rows.sort(byVersion);
+	return offered(rows, allowed);
 }
+
+const offered = (rows: Row[], allowed: string[]): Row[] => allowed.map((id) => rows.find((r) => r.id === id)).filter((r): r is Row => !!r);
 
 /** An OpenAI id pi's registry does not know, called as the terminal pi does: the provider's default model with the id
  * put in; the price is not known, so it counts as 0. */
@@ -164,6 +219,7 @@ export function registryRows(models: Model<Api>[]): Row[] {
 			out_per_m: round4(m.cost?.output),
 			cache_read_per_m: round4(m.cost?.cacheRead),
 			reasoning: !!m.reasoning,
+			...(m.reasoning ? { levels: THINKING_LEVELS.filter((l) => getSupportedThinkingLevels(m).includes(l as any)) } : {}),
 			image: (m.input || []).includes("image"),
 			structured: true,
 		}))
@@ -209,6 +265,9 @@ export interface Listing {
 export class Catalog {
 	private memory = new Map<string, Entry>();
 	private failed = new Map<string, number>(); // provider → when the last live fetch failed (not tried again for a minute)
+	private pending = new Map<string, Promise<unknown>>(); // provider → its list being fetched in the background
+	openaiModels: string[] = OPENAI_MODELS; // the OpenAI models on offer
+	blocking = false; // the tests: a list that is due is fetched before the answer
 
 	constructor(
 		public cacheDir: string | null,
@@ -249,10 +308,53 @@ export class Catalog {
 		return entry;
 	}
 
+	/** What ships with the app, for a first start with nothing cached: OpenAI's from pi's registry, OpenRouter's from
+	 * data/openrouter-free.json (the picks when it was written). The live list replaces it seconds later. */
+	private shipped(pid: string): Entry | null {
+		if (pid === "openai") return { provider: pid, rows: openaiRows(this.registryModels(), null, this.openaiModels), fetched_at: null, at: 0, source: "pi registry" };
+		try {
+			const d = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "data", "openrouter-free.json"), "utf-8"));
+			return Array.isArray(d.rows) ? { provider: pid, rows: d.rows, fetched_at: d.fetched_at || null, at: 0, source: "shipped with the app" } : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** A provider's models, at once: the list in memory, else on disk, else the one shipped with the app, whatever its
+	 * age (an old list now beats a fresh one waited for). A list over an hour old, or `refresh`, is fetched again in the
+	 * background for the next time. */
 	async list(pid: string, opts: { refresh?: boolean } = {}): Promise<Listing> {
 		const p = provider(pid);
+		if (this.blocking) return this.fetchList(p.id, !!opts.refresh);
 		let entry = this.memory.get(p.id);
-		if (entry && !opts.refresh && Date.now() - entry.at < TTL_MS) return view(entry);
+		if (!entry) {
+			entry = this.readDisk(p.id) || this.shipped(p.id) || undefined;
+			if (entry) this.memory.set(p.id, entry);
+		}
+		if (opts.refresh || !entry || Date.now() - entry.at >= TTL_MS) this.inBackground(p.id, !!opts.refresh);
+		return entry ? view(entry) : { models: [], fetched_at: null, source: null, note: "the list is on its way" };
+	}
+
+	private inBackground(pid: string, refresh: boolean): void {
+		if (this.pending.has(pid)) return;
+		const job = this.fetchList(pid, refresh)
+			.catch(() => undefined)
+			.finally(() => this.pending.delete(pid));
+		this.pending.set(pid, job);
+	}
+
+	/** The lists being fetched in the background, done (the tests). */
+	async settled(): Promise<void> {
+		await Promise.all([...this.pending.values()]);
+	}
+
+	/** Fetches a provider's list (the top models, the one-word tries): seconds, so only ever in the background — or for
+	 * the tests (`blocking`). */
+	private async fetchList(pid: string, refresh: boolean): Promise<Listing> {
+		const p = provider(pid);
+		let entry = this.memory.get(p.id);
+		if (entry && !refresh && Date.now() - entry.at < TTL_MS) return view(entry);
+		const opts = { refresh };
 		let note: string | undefined;
 		try {
 			if (!opts.refresh && Date.now() - (this.failed.get(p.id) || 0) < RETRY_AFTER_MS) {
@@ -261,7 +363,19 @@ export class Catalog {
 			if (p.id === "openrouter") {
 				const { status, body } = await this.fetch(`${OPENROUTER_URL}/models`);
 				if (status !== 200) throw new ResumesError("PROVIDER_UNREACHABLE", `openrouter.ai answered HTTP ${status}`);
-				entry = this.keep(p.id, openrouterRows(body).filter(isFree), "live · free models");
+				const top = await this.openrouterTop();
+				let rows = openrouterRows(body);
+				let picked = pickFree(rows, top);
+				// a free model OpenRouter lists may still refuse this server (some are for approved apps only): each pick is
+				// tried once with one word, and one that refuses gives its place to the next
+				const tried = new Set<string>();
+				for (let round = 0; round < 3; round++) {
+					const refused = await this.refusedOf(picked.map((r) => r.id), tried);
+					if (!refused.size) break;
+					rows = rows.filter((r) => !refused.has(r.id));
+					picked = pickFree(rows, top);
+				}
+				entry = this.keep(p.id, picked, top.length ? "live · free models, this week's top first" : "live · free models");
 			} else if (p.id === "openai") {
 				let live: string[] | null = null;
 				const key = await this.keyFor("openai");
@@ -274,7 +388,7 @@ export class Catalog {
 						note = `${String((e as Error)?.message || e)}: the list is pi's registry alone`;
 					}
 				}
-				entry = this.keep(p.id, openaiRows(this.registryModels(), live), live ? "pi registry + OpenAI's list" : "pi registry");
+				entry = this.keep(p.id, openaiRows(this.registryModels(), live, this.openaiModels), live ? "pi registry + OpenAI's list" : "pi registry");
 			}
 		} catch (e) {
 			if (!(e instanceof ResumesError)) throw e;
@@ -287,6 +401,61 @@ export class Catalog {
 		}
 		if (p.id === "openrouter" && !entry!.rows.every(isFree)) entry = { ...entry!, rows: entry!.rows.filter(isFree) }; // an older cached list may hold paid rows
 		return view(entry!, note);
+	}
+
+	private probes: Record<string, { status: number; at: number }> | null = null;
+
+	private probesFile(): string | null {
+		return this.cacheDir ? join(this.cacheDir, "openrouter-tries.json") : null;
+	}
+
+	/** Of these OpenRouter models, those that refused a one-word try (403: for approved apps only; 404: gone), each tried
+	 * at most once a week with the server's key. A busy model (429) or no answer counts as fine and is tried again later. */
+	async refusedOf(ids: string[], tried = new Set<string>()): Promise<Set<string>> {
+		if (!this.probes) {
+			const f = this.probesFile();
+			try {
+				this.probes = f ? JSON.parse(readFileSync(f, "utf-8")) : {};
+			} catch {
+				this.probes = {};
+			}
+		}
+		const probes = this.probes!;
+		const key = await this.keyFor("openrouter");
+		const due = ids.filter((id) => !tried.has(id) && (!probes[id] || Date.now() - probes[id].at > PROBE_TTL_MS));
+		for (const id of due) tried.add(id); // once per refresh
+		if (key && due.length) {
+			await Promise.all(
+				due.map(async (id) => {
+					try {
+						const { status } = await this.fetch(`${OPENROUTER_URL}/chat/completions`, { Authorization: `Bearer ${key}` }, { model: id, messages: [{ role: "user", content: "hi" }], max_tokens: 1 });
+						if (status !== 429 && status !== 401 && status < 500) probes[id] = { status, at: Date.now() };
+					} catch {
+						// no answer: tried again at the next refresh
+					}
+				}),
+			);
+			const f = this.probesFile();
+			if (f) {
+				try {
+					mkdirSync(this.cacheDir!, { recursive: true });
+					writeFileSync(f, JSON.stringify(probes), "utf-8");
+				} catch {
+					// the record is a convenience
+				}
+			}
+		}
+		return new Set(ids.filter((id) => probes[id] && [403, 404].includes(probes[id].status) && Date.now() - probes[id].at <= PROBE_TTL_MS));
+	}
+
+	/** The week's top models (OpenRouter's rankings page); any trouble: none. */
+	private async openrouterTop(): Promise<string[]> {
+		try {
+			const { status, text } = await this.fetch(OPENROUTER_RANKINGS);
+			return status === 200 && text ? topIds(text) : [];
+		} catch {
+			return [];
+		}
 	}
 
 	async row(pid: string, mid: string): Promise<Row | null> {

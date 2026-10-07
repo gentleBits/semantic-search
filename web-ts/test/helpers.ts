@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type AssistantMessage, type Context as PiContext, type FauxResponseStep, type StreamOptions, fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { type AssistantMessage, type Context as PiContext, type FauxResponseStep, type JsonObject, type StreamOptions, type TranscriptContext, fauxAssistantMessage, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
 import type { Feature } from "../src/features.js";
 import type { App } from "../src/server.js";
 import type { EngineConfig } from "../src/engine.js";
@@ -95,7 +95,7 @@ function messageOf(step: Step): AssistantMessage {
 	if (typeof step === "string") return fauxAssistantMessage(step);
 	if (Array.isArray(step)) {
 		return fauxAssistantMessage(
-			step.map(([name, args], i) => ({ type: "toolCall" as const, id: `faux_${Date.now()}_${fauxCalls++}_${i}`, name, arguments: args })),
+			step.map(([name, args], i) => ({ type: "toolCall" as const, id: `faux_${Date.now()}_${fauxCalls++}_${i}`, name, arguments: args as JsonObject })),
 			{ stopReason: "toolUse" },
 		);
 	}
@@ -117,6 +117,14 @@ export interface ApiOptions {
 	policy?: unknown;
 	now?: () => number;
 	features?: (hub: Hub) => Feature[]; // none by default
+	openaiModels?: string[]; // the OpenAI models on offer (OPENAI_MODELS if unset)
+	judgeIdleMs?: number; // a judge reply silent this long counts as stalled (2 minutes if unset)
+}
+
+/** OpenRouter's rankings page as far as the catalog reads it: the schema.org list of the week's top models. */
+export function rankingsPage(ids: string[]): string {
+	const items = ids.map((id, i) => `{"@type":"ListItem","position":${i + 1},"name":"${id}","item":"https://openrouter.ai/${id}"}`).join(",");
+	return `<html><script type="application/ld+json">{"@type":"ItemList","name":"Top LLMs by weekly token usage on OpenRouter","itemListElement":[${items}]}</script></html>`;
 }
 
 export const SUMMARY = "Summary by the faux model: the user asked who worked on data pipelines (165 people) and was told the set is too big to rank.";
@@ -129,6 +137,7 @@ export class Api {
 	headers: Record<string, string> = {}; // sent with every request, e.g. the login cookie
 	calls: Call[] = [];
 	script: Step[] = [];
+	stallJudge = 0; // this many judge calls say nothing until they are given up
 	judge: (criterion: string, ids: string[]) => { id: string; score: number; note: string }[] = (_c, ids) =>
 		ids.map((id) => ({ id, score: 40 + ((parseInt(id.slice(1), 10) * 7) % 60), note: `scripted note for ${id}` }));
 
@@ -152,10 +161,12 @@ export class Api {
 		if (opts.sid) this.sid = opts.sid;
 		this.hub = new Hub(hubOpts);
 		this.hub.features = opts.features ? opts.features(this.hub) : [];
+		if (opts.openaiModels) this.hub.catalog.openaiModels = opts.openaiModels;
+		this.hub.catalog.blocking = true; // the checks read the list that was just fetched (the background path has its own test)
 		const orig = this.hub.engine.config.bind(this.hub.engine);
 		this.hub.engine.config = async (): Promise<EngineConfig> => {
 			const c = await orig();
-			return { ...c, defaults: { ...c.defaults, model: opts.model || "faux:faux", judge_model: null }, judge: { ...c.judge, parallel: opts.parallel ?? c.judge.parallel } };
+			return { ...c, defaults: { ...c.defaults, model: opts.model || "faux:faux", judge_model: null }, judge: { ...c.judge, parallel: opts.parallel ?? c.judge.parallel, ...(opts.judgeIdleMs ? { idle_ms: opts.judgeIdleMs } : {}) } };
 		};
 		this.app = createApp(this.hub);
 		if (this.hub.models.faux) this.arm();
@@ -164,11 +175,14 @@ export class Api {
 	/** The faux model answers every call from here: a judge call with generated scores, anything else with the next step of the script. */
 	private arm(): void {
 		const faux = this.hub.models.faux!;
-		const respond = async (context: PiContext, options: StreamOptions | undefined): Promise<AssistantMessage> => {
-			const tools = (context.tools || []).map((t) => t.name);
-			const user = [...context.messages].reverse().find((m) => m.role === "user");
+		const respond = async (context: TranscriptContext, options: StreamOptions | undefined): Promise<AssistantMessage> => {
+			// pi carries the prompt and the tools as the transcript's system message; what the tests read is the conversation after it
+			const system = getCurrentSystemPrompt(context.messages);
+			const tools = getCurrentTools(context.messages).map((t) => t.name);
+			const messages = context.messages.filter((m) => m.role !== "system");
+			const user = [...messages].reverse().find((m) => m.role === "user");
 			const text = user ? (typeof user.content === "string" ? user.content : user.content.map((c) => (c.type === "text" ? c.text : "")).join("")) : "";
-			if ((context.systemPrompt || "").startsWith("You are a context summarization assistant")) {
+			if ((system || "").startsWith("You are a context summarization assistant")) {
 				this.calls.push({ summary: text });
 				return fauxAssistantMessage(SUMMARY);
 			}
@@ -177,11 +191,15 @@ export class Api {
 				const m = /Cards to score \(\d+\): ([^\n]+)/.exec(text);
 				const ids = m ? m[1].split(", ").map((s) => s.trim()) : [];
 				this.calls.push({ judge: ids, criterion });
+				if (this.stallJudge > 0) {
+					this.stallJudge -= 1;
+					await sleep(600_000, options?.signal);
+				}
 				if (this.opts.parallel !== undefined) await sleep(250, options?.signal);
 				if (options?.signal?.aborted) return fauxAssistantMessage([], { stopReason: "aborted", errorMessage: "Request was aborted" });
 				return fauxAssistantMessage([{ type: "toolCall", id: `judge_${fauxCalls++}`, name: "submit_scores", arguments: { scores: this.judge(criterion, ids) } }], { stopReason: "toolUse" });
 			}
-			this.calls.push({ system: context.systemPrompt, messages: context.messages, tools });
+			this.calls.push({ system, messages, tools });
 			const step: Step = this.script.length ? this.script.shift()! : "ok";
 			if (typeof step === "object" && !Array.isArray(step) && step.delayMs) await sleep(step.delayMs, options?.signal);
 			if (options?.signal?.aborted) return fauxAssistantMessage([], { stopReason: "aborted", errorMessage: "Request was aborted" });
@@ -267,10 +285,12 @@ export const told = (call: Call): string => {
 	return "";
 };
 
-export function stubFetch(routes: Record<string, ((headers: Record<string, string>) => { status: number; body: any }) | { status: number; body: any }>): Fetch {
-	return async (url, headers = {}) => {
+type Answer = { status: number; body: any; text?: string };
+
+export function stubFetch(routes: Record<string, ((headers: Record<string, string>, body?: any) => Answer) | Answer>): Fetch {
+	return async (url, headers = {}, body) => {
 		for (const [prefix, answer] of Object.entries(routes)) {
-			if (url.startsWith(prefix)) return typeof answer === "function" ? answer(headers) : answer;
+			if (url.startsWith(prefix)) return typeof answer === "function" ? answer(headers, body) : answer;
 		}
 		const { ResumesError } = await import("../src/errors.js");
 		throw new ResumesError("PROVIDER_UNREACHABLE", `${new URL(url).host}: no network`);

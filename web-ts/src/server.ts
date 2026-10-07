@@ -398,6 +398,7 @@ export async function main(): Promise<void> {
 		policy,
 	};
 	const hub = new Hub(opts);
+	for (const pid of ["openrouter", "openai"]) void hub.catalog.list(pid); // the model lists, fetched in the background from the start
 	hub.features = await loadFeatures(hub);
 	const publicHosts = String(a["public-host"] || "")
 		.split(",")

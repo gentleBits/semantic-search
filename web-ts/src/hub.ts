@@ -78,7 +78,7 @@ export class Hub {
 		this.owners = Owners.in(opts.stateDir);
 		this.settings = Settings.in(opts.stateDir);
 		this.models = new Models(this.settings);
-		this.catalog = new Catalog(join(opts.stateDir, "cache"), opts.fetch, () => this.models.registry.getAll(), (p) => this.settings.key(p));
+		this.catalog = new Catalog(join(opts.stateDir, "cache"), opts.fetch, () => this.models.all(), (p) => this.settings.key(p));
 		if (opts.faux) this.models.enableFaux(opts.fauxTokensPerSecond);
 	}
 
@@ -220,7 +220,7 @@ export class Hub {
 			if (!configured.includes(pid)) throw new ResumesError("BAD_ARGUMENT", `no key for ${pid} on this server (${PROVIDERS[pid].env})`);
 			const listing = await this.catalog.list(pid);
 			if (listing.models.length && !listing.models.some((m) => m.id === String(model || ""))) {
-				const what = pid === "openrouter" ? `the ${listing.models.length} free models the server offers on OpenRouter` : `the ${listing.models.length} models the server offers on ${PROVIDERS[pid].name} (pi's registry and OpenAI's list)`;
+				const what = pid === "openrouter" ? `the ${listing.models.length} free models the server offers on OpenRouter` : `the ${listing.models.length} models the server offers on ${PROVIDERS[pid].name}`;
 				throw new ResumesError("BAD_ARGUMENT", `${String(model || "")} is not one of ${what}`);
 			}
 			if (priced) {

@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { hashPassword } from "../src/auth.js";
+import { SMS_COUNTRIES } from "../src/policy.js";
 import { DryRun } from "../src/senders.js";
 import { SIGNUP_COOKIE, clientIp } from "../src/server.js";
 import { Api, type EngineHandle, startEngine } from "./helpers.js";
@@ -60,7 +61,7 @@ test("the check through the API, the first time and the next: the cookies, the s
 	assert.deepEqual((await b.get("/api/me")).body, { login: true, user: null, signup: true }, "the check on with nobody yet: nobody is let in unchecked");
 	let r = await b.get("/api/config");
 	assert.ok(r.status === 401 && r.body.error.text === "Please confirm your email and phone to search.", "nothing of the collection before the check");
-	assert.deepEqual((await b.get("/api/signup")).body, { step: "details", work_email: true });
+	assert.deepEqual((await b.get("/api/signup")).body, { step: "details", work_email: true, countries: SMS_COUNTRIES });
 
 	r = await b.post("/api/signup/start", { ...FORM, email: "ana@gmail.com" });
 	assert.ok(r.status === 422 && r.body.error.code === "PERSONAL_EMAIL" && /business email/.test(r.body.error.text) && !b.jar.has(SIGNUP_COOKIE), r.text);
@@ -114,7 +115,7 @@ test("the check through the API, the first time and the next: the cookies, the s
 	// "Forget this browser": the check again
 	assert.equal((await other.post("/api/logout")).status, 200);
 	assert.equal((await other.get("/api/config")).status, 401);
-	assert.deepEqual((await other.get("/api/signup")).body, { step: "details", work_email: true });
+	assert.deepEqual((await other.get("/api/signup")).body, { step: "details", work_email: true, countries: SMS_COUNTRIES });
 });
 
 test("breaking it over HTTP: steps out of order, no cookie, a guessed cookie, another site, a forged address", async (t) => {
@@ -145,7 +146,7 @@ test("breaking it over HTTP: steps out of order, no cookie, a guessed cookie, an
 	assert.equal(r.body.step, "phone", "use another number");
 	assert.equal((await b.get("/api/signup")).body.step, "phone", "a refresh stays there");
 	r = await b.req("DELETE", "/api/signup");
-	assert.deepEqual(r.body, { step: "details", work_email: true }, "start over");
+	assert.deepEqual(r.body, { step: "details", work_email: true, countries: SMS_COUNTRIES }, "start over");
 	assert.ok(!b.jar.has(SIGNUP_COOKIE));
 
 	// X-Forwarded-For counts only from a loopback peer (the proxy), and only its last entry
@@ -195,7 +196,7 @@ test("an operator's address needs no text; a blocked person is out at once and t
 	const slow = new Browser(api, "198.51.100.3");
 	await slow.post("/api/signup/start", { email: "slow@example.com", phone: "+40712345600" });
 	now += 31 * 60_000;
-	assert.deepEqual((await slow.get("/api/signup")).body, { step: "details", expired: true, work_email: true });
+	assert.deepEqual((await slow.get("/api/signup")).body, { step: "details", expired: true, work_email: true, countries: SMS_COUNTRIES });
 	assert.ok(!slow.jar.has(SIGNUP_COOKIE));
 
 	const ana = new Browser(api, "198.51.100.4");

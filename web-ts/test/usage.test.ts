@@ -6,6 +6,9 @@ import { after, before, test } from "node:test";
 import { hashPassword } from "../src/auth.js";
 import { inWords } from "../src/usage.js";
 import { Api, type EngineHandle, FIXTURES, kinds, last, startEngine, stubFetch } from "./helpers.js";
+import { OPENAI_MODELS } from "../src/providers.js";
+
+const OFFERED = [...OPENAI_MODELS, "gpt-7-preview"];
 
 let engine: EngineHandle | null = null;
 before(async () => {
@@ -185,38 +188,41 @@ test("the model is each person's: a turn runs on its sender's pick; a member pic
 	assert.equal(last(await turn(member, member.sid, "hi"), "done").message.model, "faux:faux", "the admin's pick changed nothing for her");
 	assert.equal((await member.request("GET", "/api/config")).body.model, "faux:faux");
 
-	// gpt-5-mini has a price in pi's registry; gpt-6-sol has none
+	// pi's registry prices the GPT-6 three (Astra above the $40/M ceiling); gpt-7-preview, which OpenAI lists and pi does not know, has no price
 	const fetch = stubFetch({
 		"https://openrouter.ai/api/v1/models": { status: 200, body: JSON.parse(readFileSync(join(FIXTURES, "openrouter-models.json"), "utf-8")) },
-		"https://api.openai.com/v1/models": { status: 200, body: { data: [{ id: "gpt-6-sol" }, { id: "gpt-5-mini" }, { id: "gpt-5.5-pro" }] } },
+		"https://api.openai.com/v1/models": { status: 200, body: { data: [{ id: "gpt-7-preview" }, { id: "gpt-6-astra" }, { id: "gpt-6.1-sol" }, { id: "gpt-6-luna" }] } },
 	});
 	const key = process.env.OPENAI_API_KEY;
 	process.env.OPENAI_API_KEY = "sk-env-openai-key-0000";
 	try {
-		const a = await as(new Api(engine, api.stateDir, { fetch, model: "openai:gpt-5-mini" }), ADMIN, "cretzuel");
-		const m = await as(new Api(engine, api.stateDir, { fetch, model: "openai:gpt-5-mini" }), MEMBER, "a long password");
+		const a = await as(new Api(engine, api.stateDir, { fetch, model: "openai:gpt-6-luna", openaiModels: OFFERED }), ADMIN, "cretzuel");
+		const m = await as(new Api(engine, api.stateDir, { fetch, model: "openai:gpt-6-luna", openaiModels: OFFERED }), MEMBER, "a long password");
 		let s = (await m.request("GET", "/api/settings")).body;
 		let r0: Awaited<ReturnType<Api["request"]>>;
 		assert.ok(s.yours && s.priced_only && s.chat.from === "config", JSON.stringify(s));
 		const listing = (await m.request("GET", "/api/providers/openai/models")).body;
-		assert.ok(listing.priced_only && listing.models.some((x: any) => x.id === "gpt-5-mini") && !listing.models.some((x: any) => x.id === "gpt-6-sol"), "a member is not shown the unpriced");
-		assert.ok(!listing.models.some((x: any) => x.out_per_m > 40) && listing.max_usd_per_m_out === 40, "nor the dearest");
-		const pro = (await a.request("GET", "/api/providers/openai/models")).body.models.find((x: any) => x.out_per_m > 40);
-		assert.ok(pro, "the registry has a model above $40/M out (a 'pro' one) for this check");
-		r0 = await m.request("PUT", "/api/settings", { chat: { provider: "openai", model: pro.id } });
+		assert.ok(listing.priced_only && listing.models.some((x: any) => x.id === "gpt-6-luna") && !listing.models.some((x: any) => x.id === "gpt-7-preview"), "a member is not shown the unpriced");
+		assert.deepEqual(listing.models.map((x: any) => x.id), OPENAI_MODELS, "a member is offered all three GPT-6 models, Astra included");
+		assert.equal(listing.max_usd_per_m_out, 50);
+		// a lower ceiling still keeps the dearest out
+		const low = await as(new Api(engine, api.stateDir, { fetch, model: "openai:gpt-6-luna", openaiModels: OFFERED, policy: { limits: { max_usd_per_m_out: 40 } } }), MEMBER, "a long password");
+		const lowList = (await low.request("GET", "/api/providers/openai/models")).body;
+		assert.ok(!lowList.models.some((x: any) => x.id === "gpt-6-astra") && lowList.max_usd_per_m_out === 40, "nor the dearest");
+		r0 = await low.request("PUT", "/api/settings", { chat: { provider: "openai", model: "gpt-6-astra" } });
 		assert.ok(r0.status === 422 && /the limit for your account is \$40/.test(r0.body.error.text), r0.text);
-		r0 = await m.request("PUT", "/api/settings", { judge: { provider: "openai", model: pro.id } });
+		r0 = await low.request("PUT", "/api/settings", { judge: { provider: "openai", model: "gpt-6-astra" } });
 		assert.ok(r0.status === 422, "the ranking model too");
-		assert.ok((await a.request("GET", "/api/providers/openai/models")).body.models.some((x: any) => x.id === "gpt-6-sol"), "an admin is");
-		let r = await m.request("PUT", "/api/settings", { chat: { provider: "openai", model: "gpt-6-sol", thinking: "low" } });
+		assert.ok((await a.request("GET", "/api/providers/openai/models")).body.models.some((x: any) => x.id === "gpt-7-preview"), "an admin is");
+		let r = await m.request("PUT", "/api/settings", { chat: { provider: "openai", model: "gpt-7-preview", thinking: "low" } });
 		assert.ok(r.status === 422 && /no known price/.test(r.body.error.text), r.text);
-		r = await m.request("PUT", "/api/settings", { chat: { provider: "openai", model: "gpt-5-mini", thinking: "high" } });
+		r = await m.request("PUT", "/api/settings", { chat: { provider: "openai", model: "gpt-6.1-sol", thinking: "high" } });
 		assert.equal(r.status, 200, r.text);
-		assert.deepEqual([r.body.chat.model, r.body.chat.thinking, r.body.chat.from], ["gpt-5-mini", "high", "yours"]);
-		r = await a.request("PUT", "/api/settings", { chat: { provider: "openai", model: "gpt-6-sol", thinking: "medium" } });
+		assert.deepEqual([r.body.chat.model, r.body.chat.thinking, r.body.chat.from], ["gpt-6.1-sol", "high", "yours"]);
+		r = await a.request("PUT", "/api/settings", { chat: { provider: "openai", model: "gpt-7-preview", thinking: "medium" } });
 		assert.equal(r.status, 200, "an admin may pick a model with no price");
-		assert.equal((await a.request("GET", "/api/config")).body.model, "openai:gpt-6-sol");
-		assert.equal((await m.request("GET", "/api/config")).body.model, "openai:gpt-5-mini", "each their own");
+		assert.equal((await a.request("GET", "/api/config")).body.model, "openai:gpt-7-preview");
+		assert.equal((await m.request("GET", "/api/config")).body.model, "openai:gpt-6.1-sol", "each their own");
 		const picks = JSON.parse(readFileSync(join(api.stateDir, "user-settings.json"), "utf-8"));
 		assert.deepEqual(Object.keys(picks).sort(), [ADMIN, MEMBER].sort());
 		assert.ok(!existsSync(join(api.stateDir, "settings.json")) || !JSON.parse(readFileSync(join(api.stateDir, "settings.json"), "utf-8")).chat?.model, "the server's default is untouched");
@@ -227,16 +233,16 @@ test("the model is each person's: a turn runs on its sender's pick; a member pic
 		assert.ok(s.yours && !s.priced_only && !("allowance" in s));
 
 		// with an unpriced server default, a member who never picked falls back to resumes.toml's model
-		const fresh = new Api(engine, undefined, { fetch, model: "openai:gpt-5-mini" });
+		const fresh = new Api(engine, undefined, { fetch, model: "openai:gpt-6-luna", openaiModels: OFFERED });
 		people(fresh);
-		writeFileSync(join(fresh.stateDir, "settings.json"), JSON.stringify({ chat: { provider: "openai", model: "gpt-6-sol", thinking: "medium" }, judge: {}, keys: {} }));
+		writeFileSync(join(fresh.stateDir, "settings.json"), JSON.stringify({ chat: { provider: "openai", model: "gpt-7-preview", thinking: "medium" }, judge: {}, keys: {} }));
 		fresh.hub.settings.reload();
-		const mem = await as(new Api(engine, fresh.stateDir, { fetch, model: "openai:gpt-5-mini" }), MEMBER, "a long password");
-		const adm = await as(new Api(engine, fresh.stateDir, { fetch, model: "openai:gpt-5-mini" }), ADMIN, "cretzuel");
+		const mem = await as(new Api(engine, fresh.stateDir, { fetch, model: "openai:gpt-6-luna", openaiModels: OFFERED }), MEMBER, "a long password");
+		const adm = await as(new Api(engine, fresh.stateDir, { fetch, model: "openai:gpt-6-luna", openaiModels: OFFERED }), ADMIN, "cretzuel");
 		const cm = (await mem.request("GET", "/api/config")).body;
-		assert.deepEqual([cm.model, cm.judge], ["openai:gpt-5-mini", "openai:gpt-5-mini"], "the member: a priced model");
-		assert.equal((await mem.hub.chatModel(undefined, MEMBER)).name, "openai:gpt-5-mini", "and that is what a turn runs on");
-		assert.equal((await adm.request("GET", "/api/config")).body.model, "openai:gpt-6-sol", "the admin: the server's default");
+		assert.deepEqual([cm.model, cm.judge], ["openai:gpt-6-luna", "openai:gpt-6-luna"], "the member: a priced model");
+		assert.equal((await mem.hub.chatModel(undefined, MEMBER)).name, "openai:gpt-6-luna", "and that is what a turn runs on");
+		assert.equal((await adm.request("GET", "/api/config")).body.model, "openai:gpt-7-preview", "the admin: the server's default");
 	} finally {
 		if (key === undefined) delete process.env.OPENAI_API_KEY;
 		else process.env.OPENAI_API_KEY = key;

@@ -56,7 +56,7 @@ export const SIGNUP_DEFAULTS: SignupPolicy = {
 	work_email: true,
 };
 
-export const LIMIT_DEFAULTS: UsePolicy = { turns_per_day: 100, usd_per_day: 1.0, at_once: 1, sessions_per_day: 10, max_usd_per_m_out: 40, ...LOGIN_LIMITS };
+export const LIMIT_DEFAULTS: UsePolicy = { turns_per_day: 100, usd_per_day: 1.0, at_once: 1, sessions_per_day: 10, max_usd_per_m_out: 50, ...LOGIN_LIMITS };
 
 /** The defaults with `raw` (the `--policy` JSON) over them; anything not a number ≥ 0 (or a list of codes, or a yes/no
  * where the default is one) is ignored. */

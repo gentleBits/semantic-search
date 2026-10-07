@@ -59,6 +59,24 @@ async function storyboard(api: Api) {
 	return { refused, ranked: await api.say("only those who know elixir") };
 }
 
+run(
+	"a judge reply that stalls is asked once more, and the ranking completes",
+	async (api) => {
+		await api.act({ type: "search", args: { topic: ["data pipelines"] } });
+		await api.act({ type: "filter", args: { skill: ["elixir"] } });
+		api.stallJudge = 1;
+		api.script = [[["rank", { criterion: CRITERION }]], "**25 people**, ranked."];
+		const t0 = Date.now();
+		const done = last(await api.say("the talented ones at a decent price"), "done");
+		assert.ok(done, "the turn ends");
+		const m = done.message;
+		assert.ok(m.rank && m.rank.judged === 25 && !m.rank.stopped && !m.rank.error, JSON.stringify(m.rank));
+		assert.equal(api.judgeCalls.length, 6, "five batches of five, one of them asked twice");
+		assert.ok(Date.now() - t0 < 10_000, "given up after the silence limit, not the default two minutes");
+	},
+	{ judgeIdleMs: 400 },
+);
+
 run("ranking is refused above the limit and runs after the filter", async (api) => {
 	const { refused, ranked } = await storyboard(api);
 	const m = last(refused, "done").message;

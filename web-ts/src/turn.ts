@@ -235,6 +235,7 @@ export async function runTurn(deps: TurnDeps, sid: string, input: TurnInput, emi
 	const agent = new Agent({
 		initialState: { systemPrompt: systemPrompt(config), model: chat.model, thinkingLevel: chat.thinking, tools: agentTools(toolSpecs(config), (n, a) => turn.call(n, a)), messages },
 		convertToLlm,
+		streamFn: chat.stream,
 		getApiKey: () => chat.key,
 		toolExecution: "sequential",
 		afterToolCall: async () => {
@@ -285,16 +286,17 @@ export async function runTurn(deps: TurnDeps, sid: string, input: TurnInput, emi
 			try {
 				await agent.prompt(prompt);
 			} catch (e) {
-				throw new ResumesError("ASSISTANT_UNAVAILABLE", String((e as Error)?.message || e).slice(0, 300));
+				// a stop can surface as a thrown "This operation was aborted": it is the stop, not a failure
+				if (!signal.aborted) throw new ResumesError("ASSISTANT_UNAVAILABLE", String((e as Error)?.message || e).slice(0, 300));
 			}
 			if (turn.fatal) throw turn.fatal;
 			const last = turn.last as AssistantMessage | null; // set by the subscriber while the prompt ran
-			if (last?.stopReason === "error") throw new ResumesError("ASSISTANT_UNAVAILABLE", (last.errorMessage || agent.state.errorMessage || "the model failed").slice(0, 300));
 			if (last?.stopReason === "aborted" || signal.aborted) {
 				final = turn.piece;
 				stopped = true;
 				break;
 			}
+			if (last?.stopReason === "error") throw new ResumesError("ASSISTANT_UNAVAILABLE", (last.errorMessage || agent.state.errorMessage || "the model failed").slice(0, 300));
 			if (turn.exhausted) {
 				final = "I could not finish that in a few steps — the list on the right shows where it stands.";
 				break;
@@ -358,7 +360,7 @@ export async function runTurn(deps: TurnDeps, sid: string, input: TurnInput, emi
 
 	// past the window, pi summarises the older turns (one model call, after the answer is on the screen)
 	try {
-		turn.compacted = await deps.memory.compactIfNeeded(recall.sm, chat.model, chat.key, chat.thinking);
+		turn.compacted = await deps.memory.compactIfNeeded(recall.sm, chat.model, chat.key, chat.thinking, chat.stream);
 		if (turn.compacted) emit({ type: "memory", compacted: { tokens_before: turn.compacted.tokensBefore, summary_chars: turn.compacted.summary.length } });
 	} catch (e) {
 		emit({ type: "memory", error: String((e as Error)?.message || e).slice(0, 200) }); // the transcript stays whole; the next turn tries again

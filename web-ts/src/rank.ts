@@ -2,10 +2,10 @@
  * The judging half of the ranking job: batches of cards to the judge model, a few at a time, scores handed in through
  * the one tool `submit_scores` and sent to the engine as they land, so stopping keeps what landed.
  */
-import { type Api, type AssistantMessage, type Model, Type, completeSimple } from "@earendil-works/pi-ai";
+import { type Api, type AssistantMessage, type Model, Type } from "@earendil-works/pi-ai";
 import type { Engine, EngineEvent, RankJob, RankSummary, Score } from "./engine.js";
 import { ResumesError } from "./errors.js";
-import type { ModelChoice } from "./models.js";
+import { type ModelChoice, guardedStream } from "./models.js";
 import { type Usage, type Words, addUsage, people } from "./text.js";
 
 export const SYSTEM =
@@ -108,7 +108,7 @@ export interface RankContext {
 	engine: Engine;
 	sid: string;
 	words: Words;
-	judgeParams: { batch: number; parallel: number; note_max: number };
+	judgeParams: { batch: number; parallel: number; note_max: number; idle_ms?: number };
 	judge: () => Promise<ModelChoice>;
 	signal: AbortSignal;
 	usage: Usage;
@@ -123,23 +123,28 @@ export interface RankContext {
 const errText = (e: unknown): string =>
 	e instanceof ResumesError ? `${e.code} ${e.message}`.trim() : String((e as any)?.text || (e as Error)?.message || e).slice(0, 300);
 
+/** A judge batch takes 5–10 s: two minutes of silence is a stalled reply, asked once more. */
+export const JUDGE_IDLE_MS = 120_000;
+
 async function judgeBatch(ctx: RankContext, job: RankJob, batch: Person[], judge: ModelChoice, signal: AbortSignal): Promise<Score[]> {
 	const got: Score[] = [];
 	let todo = batch;
+	const stream = guardedStream(judge.pi, ctx.judgeParams.idle_ms ?? JUDGE_IDLE_MS);
 	for (let attempt = 0; attempt < 2 && todo.length && !signal.aborted; attempt++) {
-		// ids the model skips are asked for once more
+		// ids the model skips are asked for once more, and so is a batch whose reply stalled
 		const level = judge.thinking !== "off" ? judge.thinking : undefined;
 		let m: AssistantMessage;
 		try {
-			m = await completeSimple(
+			m = await stream(
 				judge.model as Model<Api>,
 				{ systemPrompt: SYSTEM, messages: [{ role: "user", content: promptText(job, todo), timestamp: Date.now() }], tools: [SUBMIT_SCORES] },
 				{ apiKey: judge.key, signal, ...(level ? { reasoning: level } : {}), toolChoice: "required" } as any, // "required": OpenAI-compatible APIs make the judge call submit_scores
-			);
+			).result();
 		} catch (e) {
 			throw new ResumesError("ASSISTANT_UNAVAILABLE", String((e as Error)?.message || e).slice(0, 300));
 		}
 		addUsage(ctx.usage, m.usage);
+		if (m.stopReason === "error" && attempt === 0 && (m.errorMessage || "").startsWith("no reply from the model")) continue;
 		if (m.stopReason === "error") throw new ResumesError("ASSISTANT_UNAVAILABLE", (m.errorMessage || "the model failed").slice(0, 300));
 		if (m.stopReason === "aborted") break;
 		got.push(...readScores(todo, readAnswer(m.content), ctx.judgeParams.note_max));

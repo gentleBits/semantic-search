@@ -3,14 +3,21 @@
 **A demo, not a product.** It runs on your own machine, with your own AI key, over 2,636 public resumes from Kaggle,
 and it comes as it is, without support.
 
+**Try it online, nothing to install: [search.gentlebits.net](https://search.gentlebits.net).** 
+
 It shows fast, semantic search over thousands of documents: ask in plain words, and the question becomes filters you
 can see and remove, in milliseconds and without a model. A language model reads only the final shortlist (50 people
 at most) to rank it against what you asked for ("the talented ones at a decent price") and to say why for each.
 
+**Plug in a frontier model for state-of-the-art results.** Your question reaches the model in your own words, and so
+does every person on the shortlist: no fixed rules, no silent cut-off, a reason for every score. The better the model,
+the better the match, so pick the strongest one with the model chip next to Send. Resumes are only the example: the
+same two stages fit any large pile of documents that people question in plain words.
+
 ## Quick start
 
 macOS or Linux (on Windows: WSL), about 1.2 GB of disk. On Linux, install [uv](https://docs.astral.sh/uv/getting-started/installation/)
-and [Node.js](https://nodejs.org) 22 or newer instead of the `brew` line.
+and [Node.js](https://nodejs.org) 22.19 or newer instead of the `brew` line.
 
 ```sh
 brew install uv node
@@ -25,8 +32,8 @@ uv run resumes web --open             # opens http://localhost:8765; Ctrl-C stop
 
 Without a key you can browse, filter, sort and open all the resumes. The chat and the ranking need a key: OpenAI's,
 or an [OpenRouter](https://openrouter.ai/keys) key (`OPENROUTER_API_KEY`) and one of its free models, picked in
-Settings (the gear). The app reads the key when it starts. With the default model (`gpt-5-mini`) a question costs
-well under a cent; ranking a short list, about a cent.
+Settings (the gear). The app reads the key when it starts. With the default model (`gpt-6.1-sol`) a question costs
+well under a cent; ranking a short list, one to three cents.
 
 ## How it works
 
@@ -48,8 +55,6 @@ ahead of time is done once, at build time.
 ### The architecture
 
 ![The architecture: the build (resumes, corpus, extraction, embeddings, index) and every question (browser, app server, engine, language model)](docs/architecture.png)
-
-The drawing's source is `docs/architecture.excalidraw`; open it at excalidraw.com to change it.
 
 `uv run resumes web` starts both servers: the Python engine on 127.0.0.1:8770 and the app server on
 localhost:8765. The chat and the ranking run in the app server, which holds the keys; the page never sees one. The
@@ -146,7 +151,7 @@ sequenceDiagram
 ## If something goes wrong
 
 - **"port in use"**: another `resumes web` is still running; stop it (Ctrl-C in its terminal) and start again.
-- **"Node 22 or newer is missing"** or **"uv is missing"**: install it as shown above, then run `scripts/setup.sh` again.
+- **"Node 22.19 or newer is missing"** or **"uv is missing"**: install it as shown above, then run `scripts/setup.sh` again.
 - **The chat says "no key"**: load the key into the same terminal before `uv run resumes web`.
 
 ## Licence

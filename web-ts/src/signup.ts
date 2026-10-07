@@ -20,6 +20,7 @@ import { SendError, type Senders } from "./senders.js";
 export const FLOWS_FILE = "signups.json";
 export const LEDGER_FILE = "signup-log.jsonl";
 export const PRODUCT = "Semantic search";
+export const MAKER = "GentleBits"; // named in the text message: a text shows no sender name, only a number
 const VERSION = 2; // flows of the older sign-up with a password are not read back
 const HOUR = 3600_000;
 const DAY = 24 * HOUR;
@@ -66,6 +67,7 @@ export interface View {
 	expires_in?: number; // seconds this flow has left
 	expired?: boolean;
 	work_email?: boolean; // the form: only a work address will do ([signup] work_email)
+	countries?: string[]; // the number's field: the countries a code can be texted to ([signup] sms_countries)
 }
 
 /** The check is passed: the page is in. */
@@ -233,10 +235,11 @@ export class Signup {
 
 	view(f: Flow | null, hadOne = false): View {
 		const p = this.policy();
-		if (!f) return { step: "details", ...(hadOne ? { expired: true } : {}), work_email: p.work_email };
+		if (!f) return { step: "details", ...(hadOne ? { expired: true } : {}), work_email: p.work_email, countries: p.sms_countries };
 		const step = this.step(f);
 		const v: View = { step, email: f.email, expires_in: Math.max(0, Math.ceil((f.touched + p.flow_ttl * 1000 - this.now()) / 1000)) };
 		if (f.phone) v.phone = formatPhone(f.phone);
+		if (step === "phone") v.countries = p.sms_countries;
 		const sends = step === "email_code" ? f.email_sends : f.phone_sends;
 		const last = sends.at(-1);
 		v.resend_in = last ? Math.max(0, Math.ceil((last + p.resend_after * 1000 - this.now()) / 1000)) : 0;
@@ -335,7 +338,7 @@ export class Signup {
 		const e = this.note({ at: this.now(), kind: "sms", to: phone, ip, flow: f.id.slice(0, 8) });
 		let r: { id: string | null; invalid: boolean };
 		try {
-			r = await this.senders.sms(phone, `${code} is your ${PRODUCT} code.\n\n@${site.host.replace(/:\d+$/, "")} #${code}`);
+			r = await this.senders.sms(phone, `${code} is your ${MAKER} ${PRODUCT} code.\n\n@${site.host.replace(/:\d+$/, "")} #${code}`);
 		} catch (err) {
 			Object.assign(e, { ok: false, error: String((err as Error)?.message || err).slice(0, 300) });
 			this.write(e);
@@ -361,7 +364,7 @@ export class Signup {
 		const parsed = parsePhone(input, this.policy().sms_countries);
 		if (parsed.ok) return parsed.e164;
 		if (parsed.why === "PHONE_COUNTRY") throw new SignupError("PHONE_COUNTRY", 422, `We can't send text messages to numbers in this country (${parsed.country}).`);
-		throw new SignupError("BAD_PHONE", 422, "Please type the number with its country code, e.g. +40 712 345 678.");
+		throw new SignupError("BAD_PHONE", 422, "This doesn't look like a mobile number. Please check it.");
 	}
 
 	/** The form: an address and a number → a new flow, and a code to the address. The number is only read here: whether

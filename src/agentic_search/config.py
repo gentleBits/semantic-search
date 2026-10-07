@@ -56,7 +56,7 @@ class WebConfig:
     app_dir: Path = Path("web-ts")       # relative to the project root
     state_dir: Path = Path(".resumes")   # the app server's files: settings.json (keys), users.json (accounts), owners.json, secret, cache/
     public_host: str | None = None       # behind a proxy: the public name(s) the app server answers as, e.g. "search.example.com"
-    model: str = "openai:gpt-5-mini"     # the assistant (chat + tools); `fake:` replays a script (tests)
+    model: str = "openai:gpt-6.1-sol"    # the assistant (chat + tools); `fake:` replays a script (tests)
     effort: str | None = "medium"        # thinking level of the assistant, when the model takes one
     judge_model: str | None = None       # the ranking job; default: the assistant's model
     judge_effort: str | None = "low"

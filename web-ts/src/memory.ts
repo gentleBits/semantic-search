@@ -2,9 +2,9 @@
  * The agent's memory: one pi session per conversation in `<sessions>/<sid>/pi/` (the terminal `pi` format), appended as
  * the turn runs and compacted by pi past the window. The UI's `chat.jsonl` is separate.
  */
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
 import { SessionManager, calculateContextTokens, estimateTokens, findCutPoint, generateSummary, getLastAssistantUsage, getLatestCompactionEntry, shouldCompact } from "@earendil-works/pi-coding-agent";
 import type { Thinking } from "./text.js";
@@ -56,7 +56,10 @@ export class Memory {
 	open(sid: string): Recall {
 		const dir = this.dir(sid);
 		mkdirSync(dir, { recursive: true });
-		const sm = SessionManager.continueRecent(this.cwd, dir);
+		// the conversation's own folder: its newest transcript, whatever folder the server runs in (pi's continueRecent
+		// only finds those written from the same cwd)
+		const newest = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).sort().at(-1);
+		const sm = newest ? SessionManager.open(join(dir, newest), dir, this.cwd) : SessionManager.create(this.cwd, dir);
 		const ctx = sm.buildSessionContext();
 		return { sm, messages: ctx.messages, model: ctx.model, fresh: sm.getEntries().length === 0 };
 	}
@@ -83,9 +86,9 @@ export class Memory {
 		return Math.max(counted, messages.reduce((n, m) => n + estimateTokens(m), 0));
 	}
 
-	/** Over the window, the older turns become one summary (one model call); the cut moves back to a turn's start
-	 * when it would split one. */
-	async compactIfNeeded(sm: SessionManager, model: Model<Api>, apiKey: string | undefined, thinking: Thinking, signal?: AbortSignal): Promise<Compacted | null> {
+	/** Over the window, the older turns become one summary (one model call through `stream`, the chat's pi collection);
+	 * the cut moves back to a turn's start when it would split one. */
+	async compactIfNeeded(sm: SessionManager, model: Model<Api>, apiKey: string | undefined, thinking: Thinking, stream: StreamFn, signal?: AbortSignal): Promise<Compacted | null> {
 		const window = Math.min(this.window, model.contextWindow || this.window);
 		const settings = this.settings();
 		const tokensBefore = this.size(sm);
@@ -106,7 +109,7 @@ export class Memory {
 		for (const e of entries.slice(start, end)) if (e.type === "message") older.push(e.message);
 		if (!older.length) return null;
 		const level: Thinking = thinking === "off" ? "off" : "low"; // a summary needs no long thought
-		const summary = await generateSummary(older, model, settings.reserveTokens, apiKey || "", undefined, signal, COMPACTION_FOCUS, previous?.summary, level);
+		const summary = await generateSummary(older, model, settings.reserveTokens, apiKey || "", undefined, signal, COMPACTION_FOCUS, previous?.summary, level, stream);
 		sm.appendCompaction(summary, first.id, tokensBefore);
 		return { tokensBefore, summary };
 	}

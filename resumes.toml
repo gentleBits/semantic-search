@@ -57,10 +57,11 @@ host = "127.0.0.1"                    # local; the login is on as soon as `resum
 port = 8765                           # the app server (web-ts/, Node 22): the page and the API the browser talks to
 # public_host = "search.example.com"  # behind a proxy: the public name the app server also answers as (Host and Origin)
 engine_port = 8770                    # the Python engine's API on 127.0.0.1; `resumes web` starts both
-model = "openai:gpt-5-mini"           # the assistant, as provider:model — openai:… or openrouter:vendor/model; the app server runs it
+model = "openai:gpt-6.1-sol"          # the assistant, as provider:model — openai:… or openrouter:vendor/model; the app server runs it
                                       # on pi (pi-agent-core + pi-ai). What Settings chooses (.resumes/settings.json) wins over this line.
-effort = "medium"                     # thinking level: off, minimal, low, medium (default), high
-# judge_model = "openai:gpt-5-mini"   # the ranking job; default: the assistant's model
+                                      # OpenAI's list offers gpt-6-astra, gpt-6.1-sol and gpt-6-luna.
+effort = "medium"                     # thinking level: off, minimal, low, medium (default), high (Sol and Astra start at low)
+# judge_model = "openai:gpt-6-luna"   # the ranking job; default: the assistant's model
 judge_batch = 5                       # cards per call: small batches make the progress visible
 judge_parallel = 5                    # calls at the same time
 name = "Resumes"                      # the collection, as the header names it; noun/nouns/document: the words the UI uses for it
@@ -84,4 +85,4 @@ demo = true                           # a "demo" label next to the name in the h
 # turns_per_day = 100                 # assistant turns a day (24 h, rolling)
 # usd_per_day = 1.0                   # model cost a day (the turn's cost, its ranking included)
 # sessions_per_day = 10               # new sessions a day (deleting one gives none back)
-# max_usd_per_m_out = 40              # the dearest model a member may pick, $ per million output tokens (no "pro" models)
+# max_usd_per_m_out = 50              # the dearest model a member may pick, $ per million output tokens (all three GPT-6; no "pro" models)

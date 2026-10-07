@@ -174,7 +174,7 @@ test("the first time: the form, the email's code, a text to the new number, its 
 	assert.equal(smsCount(r), 1);
 	const sms = r.dry!.sent.at(-1)!;
 	assert.equal(sms.to, PHONE);
-	assert.match(sms.text, /^\d{6} is your Semantic search code\.\n\n@search\.example\.test #\d{6}$/, "the origin-bound line phones fill in from");
+	assert.match(sms.text, /^\d{6} is your GentleBits Semantic search code\.\n\n@search\.example\.test #\d{6}$/, "the origin-bound line phones fill in from");
 	assert.deepEqual(r.s.verifyPhone(id, r.lastCode("sms"), IP), { done: true, user: "ana@example.com" });
 	assert.equal(r.users.role("ana@example.com"), "member");
 	assert.ok(r.users.knownPhone(PHONE));
@@ -414,6 +414,7 @@ test("a provider failing: SEND_FAILED, still counted (no resend loop), the ledge
 	assert.match(u.message, /can't receive text messages/);
 	assert.equal((u.extra.view as View).step, "phone", "back to the number");
 	assert.equal(r.s.view(r.s.flow(ok.id)).step, "phone");
+	assert.deepEqual([(u.extra.view as View).countries, r.s.view(r.s.flow(ok.id)).countries], [SIGNUP_DEFAULTS.sms_countries, SIGNUP_DEFAULTS.sms_countries], "the number's step names the countries");
 	assert.equal(ledger().at(-1).error, "undeliverable");
 	invalid = false;
 	fail = true;
@@ -436,7 +437,7 @@ test("a restart in the middle: the flow, its tries and its code survive (signups
 	// a flow expires after 30 minutes
 	after.later(1801);
 	assert.equal(after.s.flow(id), null);
-	assert.deepEqual(after.s.view(null, true), { step: "details", expired: true, work_email: true });
+	assert.deepEqual(after.s.view(null, true), { step: "details", expired: true, work_email: true, countries: SIGNUP_DEFAULTS.sms_countries });
 	await rejects(r.s.phone(id, PHONE, IP, SITE), "SIGNUP_EXPIRED");
 	const third = rig({ dir: r.dir, t: r.clock });
 	assert.equal(third.s.flow(id), null, "and is not read back after a restart either");

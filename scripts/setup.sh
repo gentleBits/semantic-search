@@ -28,8 +28,8 @@ command -v uv >/dev/null || stop "uv is missing. Install it: $([ $mac = 1 ] && e
 if ! command -v node >/dev/null; then # Homebrew's node@22 is installed off the PATH
 	for d in /opt/homebrew/opt/node@22/bin /usr/local/opt/node@22/bin; do [ -x "$d/node" ] && export PATH="$d:$PATH" && break; done
 fi
-command -v node >/dev/null || stop "Node 22 or newer is missing. Install it: $([ $mac = 1 ] && echo 'brew install node' || echo 'https://nodejs.org (nvm or NodeSource; the distribution'"'"'s own package is usually too old)')"
-[ "$(node -p 'process.versions.node.split(".")[0]')" -ge 22 ] || stop "Node $(node --version) is too old: 22 or newer is needed"
+command -v node >/dev/null || stop "Node 22.19 or newer is missing. Install it: $([ $mac = 1 ] && echo 'brew install node' || echo 'https://nodejs.org (nvm or NodeSource; the distribution'"'"'s own package is usually too old)')"
+node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 19) ? 0 : 1)' || stop "Node $(node --version) is too old: 22.19 or newer is needed"
 for tool in curl unzip; do command -v $tool >/dev/null || stop "$tool is missing"; done
 
 say "Python 3.13 and its packages (uv) …"
